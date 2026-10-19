@@ -6,6 +6,7 @@ from mcp.server.fastmcp import FastMCP
 
 from agentforge.tools.fs import FileTool, Workspace
 from agentforge.models import ToolResult
+from agentforge.tools.shell import ShellTool
 
 mcp = FastMCP("AgentForge tools", host="127.0.0.1", port=int(os.getenv("MCP_PORT", "9000")))
 workspace = Workspace(Path(os.getenv("MCP_WORKSPACE", ".agentforge/mcp-workspace")))
@@ -39,6 +40,12 @@ async def grep(query: str) -> ToolResult:
 async def glob(pattern: str) -> ToolResult:
     """Find workspace file paths matching a glob."""
     return await execute("glob", {"pattern": pattern})
+
+
+@mcp.tool()
+async def run_command(command: str) -> ToolResult:
+    """Run an allowlisted command inside the assigned workspace. No shell operators."""
+    return await ShellTool(workspace).execute({"command": command})
 
 
 if __name__ == "__main__":
