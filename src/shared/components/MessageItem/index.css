@@ -1,0 +1,212 @@
+/* 消息气泡 */
+.message {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 28px;
+  align-items: flex-start;
+  animation-fill-mode: forwards;
+}
+
+.message.user {
+ flex-direction: row-reverse;
+ align-items: flex-start;
+}
+
+.avatar img {
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  padding: 2px;
+  background-color: var(--avatar-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: var(--soft-shadow);
+  border: 1px solid var(--border-color);
+}
+
+@media (max-width: 768px) {
+  .avatar img {
+    width: 28px;
+    height: 28px;
+  }
+  
+  .message {
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+}
+
+.bubble-wrap {
+  width: 100%;
+  position: relative;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+@media (max-width: 768px) {
+  .bubble-wrap {
+    max-width: 100%;
+  }
+  
+  .bubble {
+    padding: 10px 14px;
+  }
+  
+  .message.bot .bubble-wrap {
+    margin-right: 0;
+  }
+  
+  .message.user .bubble {
+    margin-left: 0;
+  }
+}
+
+
+.bubble {
+  padding: 16px 18px;
+  border-radius: 20px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  position: relative;
+  border: 1px solid var(--border-color);
+  background: var(--bot-bubble-bg);
+  box-shadow: var(--card-shadow);
+  backdrop-filter: blur(12px);
+}
+
+.bubbleFold {
+  max-height: 200px;
+  overflow: hidden;
+}
+
+.message.bot .bubble-wrap {
+  margin-right: clamp(0px, 4vw, 56px);
+}
+
+.message.user .bubble-wrap {
+  width: fit-content;
+  max-width: min(72%, 520px);
+  margin-left: auto;
+  align-items: flex-end;
+  overflow: visible;
+}
+
+.botName {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: var(--font-body);
+  letter-spacing: 0.08em;
+  color: var(--text-muted-color);
+  text-transform: uppercase;
+}
+
+.message.user .bubble {
+  background: var(--user-bubble-bg);
+  border: 1px solid color-mix(in srgb, var(--secondary-color) 18%, transparent);
+  box-shadow: var(--user-bubble-shadow);
+  margin-left: 0;
+  align-self: flex-end;
+  max-width: 100%;
+}
+
+.message.user .bubble::after {
+  /* content: "";
+  position: absolute;
+  inset: 1px 1px auto auto;
+  width: 46%;
+  height: 50%;
+  background: radial-gradient(circle at top right, rgba(255, 255, 255, 0.35), transparent 60%);
+  opacity: 0.7;
+  pointer-events: none; */
+}
+
+.message.user .bubble-wrap:hover > .userTimestamp {
+  visibility: visible;
+}
+
+.message.user .bubble-wrap:hover > .userTime {
+  visibility: visible;
+}
+
+.message.bot .bubble {
+  background: var(--bot-bubble-bg);
+}
+
+.content {
+  font-size: 15px;
+  line-height: 1.72;
+}
+
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.message-attachment-image {
+  display: block;
+  width: clamp(168px, 26vw, 240px);
+  max-width: 100%;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--border-color) 85%, transparent);
+  box-shadow: var(--soft-shadow);
+  object-fit: cover;
+}
+
+.message.user .message-attachments {
+  justify-content: flex-end;
+}
+
+.message-attachment-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.message.user .message-attachment-files {
+  justify-content: flex-end;
+}
+
+.message-attachment-file {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--secondary-color) 18%, transparent);
+  background: color-mix(in srgb, var(--surface-color) 92%, transparent);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+@keyframes messageIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+@media (max-width: 768px) {
+  .message.user .bubble-wrap {
+    max-width: calc(100% - 24px);
+  }
+
+  .message-attachment-image {
+    width: min(220px, 100%);
+  }
+}
+.reasoning-panel { margin-bottom: 16px; color: var(--text-muted-color); border: 1px solid var(--border-color); border-radius: 10px; }
+.reasoning-panel > summary { cursor: pointer; padding: 10px 14px; font-size: 13px; }
+.reasoning-panel > summary small { margin-left: 12px; font-variant-numeric: tabular-nums; }
+.reasoning-panel > summary:focus-visible { outline: 2px solid var(--secondary-color); outline-offset: 2px; }
+.reasoning-panel-content { padding: 0 14px 10px; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
