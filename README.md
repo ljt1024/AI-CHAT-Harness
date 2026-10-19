@@ -1,3 +1,13 @@
+# AgentForge
+
+基于 AI-CHAT 2.1.1 的智能体平台。保留 React/Vite 前端和原 `end/` 后端，新增 Python FastAPI Harness。
+
+当前已实现第一阶段核心代码：DeepSeek 流式网关、受限工具、MCP、运行循环、检查点、上下文压缩、中间件和人工审批 API。Docker/MongoDB 实机验收仍待通过，尚未完成整个平台。
+
+开发与验收说明见 [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)，剩余事项见 [NOTES.md](NOTES.md)。下文保留 AI-CHAT 原始使用说明；其旧后端配置不适用于新 Harness。
+
+---
+
 # AI Chat
 
 基于 **React + TypeScript + Express + LangChain / LangGraph** 的全栈 AI 助手，支持多模型对话、ReAct 智能体、持久化会话记忆、文件生成与实时预览、图片理解和文生图。

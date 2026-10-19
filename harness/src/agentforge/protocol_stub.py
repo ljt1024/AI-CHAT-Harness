@@ -25,6 +25,17 @@ async def health():
     return {"status": "ok", "mode": "protocol-stub"}
 
 
+@app.get("/api/models")
+async def models():
+    return {"code": 200, "data": [{"id": "protocol-test", "name": "AgentForge Protocol Test",
+        "provider": "agentforge", "supportsTools": True, "supportsStream": True, "enabled": True}]}
+
+
+@app.get("/api/agents")
+async def agents():
+    return {"code": 200, "data": [{"id": "default", "name": "AgentForge", "modelId": "protocol-test"}]}
+
+
 @app.post("/api/agents/run")
 async def run(request: LegacyRequest):
     if os.getenv("AGENTFORGE_PROTOCOL_STUB") != "1":

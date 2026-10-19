@@ -68,3 +68,28 @@ async def test_session_concurrency_and_history(tmp_path):
     session = await runtime.store.get("sessions", "s")
     assert session["history"][-1]["content"] == "finished"
     assert not runtime.active
+
+
+async def test_resume_after_failure_preserves_trace_and_committed_history(tmp_path):
+    class CrashAfterCheckpoint:
+        async def chat_stream(self, req):
+            count = sum(m["role"] == "tool" for m in req.messages)
+            if count == 5:
+                raise RuntimeError("simulated crash")
+            yield ToolCallRequest(call=ToolCall(name="glob", arguments={"pattern": str(count)}))
+            yield UsageReport(tokens_in=2, tokens_out=1, usd=0.001)
+            yield Done()
+    runtime, _ = make_runtime(tmp_path, "done")
+    runtime.gateway.register("deepseek", CrashAfterCheckpoint())
+    agent = AgentDefinition(name="test", tools=["glob"])
+    with pytest.raises(RuntimeError):
+        await runtime.run(agent, "task", "s", EventBus())
+    checkpoint = await runtime.store.latest_checkpoint("s")
+    assert checkpoint["state"]["index"] == 5
+    assert "history" not in await runtime.store.get("sessions", "s")
+    runtime.gateway.register("deepseek", Script("done"))
+    result = await runtime.run(agent, "task", "s", EventBus(), resume=True)
+    assert result.stop_reason == "completed"
+    assert result.trace_id == checkpoint["state"]["trace_id"]
+    assert result.cost.usd == pytest.approx(0.005)
+    assert len(await runtime.store.list("traces")) == 1

@@ -50,7 +50,8 @@ class Runtime:
             await self.store.checkpoint(session_id, {
                 "messages": messages, "index": index, "cost": cost.model_dump(),
                 "trace_id": trace_id, "turnId": turn_id, "agent_id": agent.id,
-                "task": task, "fingerprint": last_fingerprint, "idle": idle})
+                "task": task, "fingerprint": last_fingerprint, "idle": idle,
+                "tool_calls": tool_count, "completed": reason == "completed"})
 
         ctx = None
         last_fingerprint, idle, tool_count = "", 0, 0
@@ -63,9 +64,12 @@ class Runtime:
                 if not checkpoint or checkpoint["state"]["agent_id"] != agent.id:
                     raise ValueError("No matching checkpoint exists for this session.")
                 state = checkpoint["state"]
+                if state.get("completed"):
+                    raise ValueError("This checkpoint is already complete; start a new turn.")
                 messages, start = state["messages"], state["index"]
                 cost, trace_id, turn_id = Cost(**state["cost"]), state["trace_id"], state["turnId"]
                 last_fingerprint, idle = state.get("fingerprint", ""), state.get("idle", 0)
+                tool_count = state.get("tool_calls", 0)
             else:
                 if session.get("lastTurnId") == turn_id:
                     raise ValueError("This turn is already committed; use a new turnId.")
@@ -172,11 +176,16 @@ class Runtime:
             return result
         except BaseException as exc:
             if isinstance(exc, (Exception, asyncio.CancelledError)):
+                if type(exc).__name__ == "MiddlewareRejected":
+                    await emit("middleware_rejected", message=str(exc))
                 if self.middleware and ctx:
                     await self.middleware.on_error(ctx, exc)
                 await self.store.put("traces", {"id": trace_id, "sessionId": session_id,
                     "agent_id": agent.id, "status": "cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
                     "cost": cost.model_dump(), "error": type(exc).__name__})
+                current = await self.store.get("sessions", session_id)
+                if current:
+                    await self.store.put("sessions", {**current, "status": "error"})
                 await emit("error", message="Run failed. Inspect the server logs and configuration.")
             raise
         finally:

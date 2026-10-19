@@ -16,3 +16,5 @@
 - Docker Desktop starts, but `docker compose up -d mongo` fails against configured registries (EOF, invalid manifest/referrers index). T0 infrastructure acceptance is pending; mock-backed core tests do not replace this check.
 - Core implementation and isolated tests were prepared while infrastructure was unavailable; no full Tier 1 acceptance is claimed until MongoDB and browser checks are complete.
 - ESLint adoption is scoped to migrated infrastructure and agent API TypeScript; legacy frontend TypeScript lint debt is deferred. The immutable end/ tree is excluded.
+- Browser transport smoke passed on desktop 1440x1000 and mobile 390x844 using the explicitly opt-in protocol stub and installed Chrome. Screenshots: harness/out/browser/.
+- Production API integration covers create agent, run, approval/denial, persisted trace and usage, using mock MongoDB and deterministic adapters. Real model and Docker integration remain pending.
