@@ -28,7 +28,7 @@ import './chat.css';
 
 const ChatAI: React.FC = () => {
   const controllerRef = useRef<AbortController | null>(null);
-  const chatApiUrl = ((import.meta as any).env.VITE_CHAT_BASE_URL || '') as string
+  const chatApiUrl = ((import.meta as any).env.VITE_CHAT_BASE_URL || '/api/chat/completions') as string
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isAgentMode, setIsAgentMode] = useState(() => localStorage.getItem('chat.agentMode') === 'true');
