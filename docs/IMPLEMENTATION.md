@@ -32,6 +32,34 @@ The original backend can be started for contract comparison with
 
 ## Progress
 
+### Update: 2026-10-20
+
+MongoDB now starts successfully with `docker compose up -d --wait mongo`. If the configured
+Docker Hub mirrors fail, use the official-image mirror and tag the images locally:
+
+```sh
+docker pull public.ecr.aws/docker/library/mongo:7
+docker tag public.ecr.aws/docker/library/mongo:7 mongo:7
+docker pull public.ecr.aws/docker/library/python:3.12-slim
+docker tag public.ecr.aws/docker/library/python:3.12-slim python:3.12-slim
+```
+
+T10 runner and T11 pool are implemented and tested against real Docker. The runner strips
+inherited image environment variables, runs as non-root, defaults to no network and destroys
+the container on timeout/cancellation. Pool ownership isolates sessions and preserves the
+workspace when rebuilding an expired container. The sub-500ms test measures warm acquisition.
+
+T12 GridFS snapshot storage/restoration is implemented and tested against real MongoDB.
+Restore requires an empty destination and rejects unsafe archive entries before writing.
+The caller must stop writes and hold exclusive workspace ownership during snapshot/restore.
+
+These modules are not yet wired into the production run factory; the API still rejects
+sandbox policies. File upload/download endpoints, automatic snapshots and browser management
+remain pending. The historical Tier 1 notes below describe the earlier checkpoint.
+
+Run all available checks with `cd harness && uv run pytest tests/unit tests/e2e -q`.
+Docker/MongoDB tests skip explicitly when their external prerequisites are absent.
+
 - T0: Base import, runtime package, configuration, MongoDB compose, CI and ADR.
 - T0 infrastructure acceptance is pending: local registries return EOF, malformed index, or referrers errors. Compose configuration validates, but MongoDB has not started.
 - T0.5: HTTP/SSE moved into infrastructure; preserved sessionId/turnId; opt-in protocol stub.
