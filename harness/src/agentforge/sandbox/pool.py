@@ -1,0 +1,186 @@
+import asyncio
+from dataclasses import dataclass
+from enum import StrEnum
+import re
+import time
+
+from agentforge.sandbox.breaker import CircuitBreaker
+from agentforge.sandbox.docker_runner import Sandbox, SandboxUnavailable
+
+
+class SandboxState(StrEnum):
+    CREATE = "CREATE"
+    WARM = "WARM"
+    CLAIMED = "CLAIMED"
+    CACHED = "CACHED"
+    DESTROY = "DESTROY"
+
+
+@dataclass
+class Lease:
+    sandbox: Sandbox
+    state: SandboxState
+    session_id: str | None = None
+    used_at: float = 0
+
+
+class SandboxPool:
+    def __init__(self, runner, warm_size=2, max_size=8, idle_seconds=600,
+                 breaker=None, clock=time.monotonic):
+        if not 0 <= warm_size <= max_size:
+            raise ValueError("Warm size must be between zero and max size.")
+        self.runner, self.warm_size, self.max_size = runner, warm_size, max_size
+        self.idle_seconds, self.clock = idle_seconds, clock
+        self.breaker = breaker or CircuitBreaker(clock=clock)
+        self.entries: dict[str, Lease] = {}
+        self.pending_sessions: set[str] = set()
+        self.workspaces: dict[str, object] = {}
+        self.lock, self.creating = asyncio.Lock(), 0
+        self.background: asyncio.Task | None = None
+        self.maintenance: asyncio.Task | None = None
+        self.closed, self.last_error = False, None
+
+    async def start(self):
+        await self.replenish()
+        self.maintenance = asyncio.create_task(self._maintain())
+
+    async def _maintain(self):
+        while True:
+            await asyncio.sleep(min(30, max(0.1, self.idle_seconds / 2)))
+            await self.reap()
+            await self.replenish()
+
+    def _schedule_replenish(self):
+        if not self.closed and (self.background is None or self.background.done()):
+            self.background = asyncio.create_task(self.replenish())
+
+    async def replenish(self):
+        while not self.closed:
+            async with self.lock:
+                warm = sum(e.state == SandboxState.WARM for e in self.entries.values())
+                if warm + self.creating >= self.warm_size or len(self.entries) + self.creating >= self.max_size:
+                    return
+                try:
+                    self.breaker.before_call()
+                except SandboxUnavailable:
+                    return
+                self.creating += 1
+            sandbox = None
+            try:
+                sandbox = await self.runner.create()
+                self.breaker.success()
+                async with self.lock:
+                    if not self.closed:
+                        self.entries[sandbox.id] = Lease(sandbox, SandboxState.WARM, used_at=self.clock())
+                if self.closed:
+                    await self.runner.destroy(sandbox)
+                    return
+            except SandboxUnavailable as exc:
+                self.last_error = str(exc)
+                self.breaker.failure()
+                return
+            finally:
+                async with self.lock:
+                    self.creating -= 1
+
+    async def acquire(self, session_id, image="python:3.12-slim") -> Lease:
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", session_id):
+            raise ValueError("Invalid sandbox session ID.")
+        if self.closed:
+            raise SandboxUnavailable("Sandbox pool is closed.")
+        selected = None
+        async with self.lock:
+            if session_id in self.pending_sessions:
+                raise SandboxUnavailable("Session sandbox is already being created.")
+            for lease in self.entries.values():
+                if lease.session_id == session_id and lease.state != SandboxState.DESTROY:
+                    if lease.state == SandboxState.CLAIMED:
+                        raise SandboxUnavailable("Session already owns an active sandbox lease.")
+                    if lease.sandbox.image != image:
+                        raise SandboxUnavailable("A session cannot change sandbox image.")
+                    selected = lease
+                    break
+            if selected is None and session_id not in self.workspaces:
+                selected = next((e for e in self.entries.values()
+                    if e.state == SandboxState.WARM and e.sandbox.image == image), None)
+            if selected:
+                self.breaker.before_call()
+                selected.state, selected.session_id = SandboxState.CLAIMED, session_id
+                selected.used_at = self.clock()
+            else:
+                if len(self.entries) + self.creating >= self.max_size:
+                    raise SandboxUnavailable("Sandbox pool is at capacity. Wait for another session to finish.")
+                self.breaker.before_call()
+                self.creating += 1
+                self.pending_sessions.add(session_id)
+        if selected:
+            if await self.runner.healthy(selected.sandbox):
+                self.workspaces[session_id] = selected.sandbox.workspace
+                self.breaker.success()
+                self._schedule_replenish()
+                return selected
+            await self._destroy(selected)
+            self.breaker.failure()
+            return await self.acquire(session_id, image)
+        try:
+            sandbox = await self.runner.create(image, workspace=self.workspaces.get(session_id))
+            if self.closed:
+                await self.runner.destroy(sandbox)
+                raise SandboxUnavailable("Sandbox pool closed during creation.")
+            selected = Lease(sandbox, SandboxState.CLAIMED, session_id, self.clock())
+            async with self.lock:
+                self.entries[sandbox.id] = selected
+                self.workspaces[session_id] = sandbox.workspace
+            self.breaker.success()
+        except SandboxUnavailable:
+            self.breaker.failure()
+            raise
+        finally:
+            async with self.lock:
+                self.creating -= 1
+                self.pending_sessions.discard(session_id)
+        self._schedule_replenish()
+        return selected
+
+    async def release(self, session_id):
+        async with self.lock:
+            lease = next((e for e in self.entries.values() if e.session_id == session_id), None)
+            if lease is None or lease.state != SandboxState.CLAIMED:
+                return
+            if lease.sandbox.alive:
+                lease.state, lease.used_at = SandboxState.CACHED, self.clock()
+                return
+        await self._destroy(lease)
+        self.breaker.failure()
+        self._schedule_replenish()
+
+    async def _destroy(self, lease):
+        async with self.lock:
+            lease.state = SandboxState.DESTROY
+            self.entries.pop(lease.sandbox.id, None)
+        await self.runner.destroy(lease.sandbox)
+
+    async def reap(self):
+        async with self.lock:
+            expired = [e for e in self.entries.values() if e.state == SandboxState.CACHED
+                       and self.clock() - e.used_at >= self.idle_seconds]
+            for lease in expired:
+                lease.state = SandboxState.DESTROY
+        for lease in expired:
+            await self._destroy(lease)
+
+    def status(self):
+        return {"states": {state.value: sum(e.state == state for e in self.entries.values())
+                           for state in SandboxState}, "creating": self.creating,
+                "circuit": self.breaker.status(), "last_error": self.last_error,
+                "sandboxes": [{"id": e.sandbox.id, "state": e.state.value,
+                    "session_id": e.session_id, "image": e.sandbox.image} for e in self.entries.values()]}
+
+    async def close(self):
+        self.closed = True
+        if self.maintenance:
+            self.maintenance.cancel()
+            await asyncio.gather(self.maintenance, return_exceptions=True)
+        if self.background:
+            await asyncio.gather(self.background, return_exceptions=True)
+        await asyncio.gather(*(self._destroy(e) for e in list(self.entries.values())))
