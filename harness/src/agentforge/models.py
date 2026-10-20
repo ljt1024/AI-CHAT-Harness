@@ -1,7 +1,7 @@
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def new_id() -> str:
@@ -20,6 +20,12 @@ class StopConditions(BaseModel):
     idle_limit: int = Field(default=3, ge=1, le=10)
 
 
+class SandboxPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    image: Literal["python:3.12-slim", "node:22-slim"] = "python:3.12-slim"
+    timeout: int = Field(default=30, ge=1, le=30)
+
+
 class AgentDefinition(BaseModel):
     id: str = Field(default_factory=new_id)
     name: str = Field(min_length=1, max_length=100)
@@ -27,7 +33,7 @@ class AgentDefinition(BaseModel):
     model: ModelRef = Field(default_factory=ModelRef)
     tools: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
-    sandbox_policy: dict | None = None
+    sandbox_policy: SandboxPolicy | None = None
     permissions: dict[str, Literal["auto", "rule", "confirm"]] = Field(default_factory=dict)
     stop_conditions: StopConditions = Field(default_factory=StopConditions)
 

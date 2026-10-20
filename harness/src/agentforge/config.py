@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,3 +12,6 @@ class Settings(BaseSettings):
     mcp_server_url: str = "http://localhost:9000/mcp"
     agentforge_workspace: Path = Path("../.agentforge/workspaces")
     approval_timeout: float = 300
+    sandbox_warm_size: int = Field(default=2, ge=0, le=8)
+    sandbox_max_size: int = Field(default=8, ge=1, le=32)
+    sandbox_idle_seconds: int = Field(default=600, ge=1)

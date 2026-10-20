@@ -6,6 +6,7 @@ dependencies = [
   "fastapi>=0.115,<1", "uvicorn[standard]>=0.34,<1", "httpx>=0.28,<1",
   "pydantic-settings>=2.8,<3", "motor>=3.7,<4", "mcp>=1.12,<2",
   "jsonschema>=4.23,<5",
+  "docker>=7.1,<8", "python-multipart>=0.0.20,<1",
 ]
 
 [dependency-groups]
@@ -16,6 +17,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
