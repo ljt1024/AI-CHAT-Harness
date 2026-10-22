@@ -1,24 +1,184 @@
 # AgentForge
 
-基于 AI-CHAT 2.1.1 的智能体平台。保留 React/Vite 前端和原 `end/` 后端，新增 Python FastAPI Harness。
+在 **AI-CHAT 2.1.1** 前端基础上演进的智能体平台：保留 **React + Vite** 前端，用 **Python FastAPI Harness** 替换了原来的 Node/Express 后端，并加入 Docker 沙箱、MongoDB 持久化、技能与 MCP 扩展、人工审批和产物交付。
 
-当前已实现第一阶段核心代码：DeepSeek 流式网关、受限工具、MCP、运行循环、检查点、上下文压缩、中间件和人工审批 API。Docker/MongoDB 实机验收仍待通过，尚未完成整个平台。
+> **当前状态**：T0–T12 已完成并通过实机验收（真实 Docker、真实 MongoDB、真实模型浏览器验证）；前端智能体体验已重构为连贯的流式展示——思考 / 行动 / 观察活动条、分块稳定的 Markdown、输入框上方的人工审批卡、带防遮挡策略的产物预览。
+> 原 `end/` 后端仅作参考保留，**其配置与接口不适用于 Harness**。验收记录见 [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)，待办见 [NOTES.md](NOTES.md)。
 
-开发与验收说明见 [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)，剩余事项见 [NOTES.md](NOTES.md)。下文保留 AI-CHAT 原始使用说明；其旧后端配置不适用于新 Harness。
+## 架构
+
+| 层 | 技术 | 说明 |
+| --- | --- | --- |
+| 前端 | React 18 + TypeScript + Vite | 端口 `5174`，`/api` 与 `/ws` 代理到 Harness |
+| 运行时 | Python 3.12 + FastAPI（`harness/src/agentforge`） | 单进程、单 worker；端口默认 `8000`，OpenAPI 在 `/docs` |
+| 模型 | DeepSeek 流式网关（`gateway/`） | 支持增量思考内容与工具调用流 |
+| 持久化 | MongoDB（`docker-compose.yml`） | 会话、追踪、检查点、审批、技能、产物（GridFS） |
+| 执行 | Docker 沙箱（`sandbox/`） | 非 root、默认无网络、超时即销毁；带预热池与快照 |
+
+## 快速开始
+
+### 1. 依赖
+
+需要 **Node.js >= 22.13**、**Python >= 3.12**、**uv**、**Docker**（用于 MongoDB 与沙箱）。
+
+```bash
+npm ci
+cd harness && uv sync
+```
+
+### 2. 启动 MongoDB
+
+```bash
+docker compose up -d mongo      # 127.0.0.1:27017，库名 agentforge
+```
+
+### 3. 配置环境变量
+
+复制 `.env.example` 为 `.env`（**不要提交**，密钥只留在服务端）：
+
+```env
+DEEPSEEK_API_KEY=你的密钥
+MONGODB_URI=mongodb://localhost:27017
+AGENTFORGE_DB=agentforge
+AGENTFORGE_WORKSPACE=.agentforge/workspaces
+MCP_SERVER_URL=http://localhost:9000/mcp
+```
+
+### 4. 启动后端
+
+```bash
+cd harness
+uv run uvicorn agentforge.server:app --host 127.0.0.1 --port 8000
+```
+
+只能使用**一个 Uvicorn worker**：会话锁、审批 future 与 SSE 重放都在进程内。没有 MongoDB 时健康检查返回 `degraded`；没有模型密钥时运行返回 `503`。
+
+### 5. 启动前端
+
+```bash
+npm run dev        # http://localhost:5174/ai
+```
+
+端口冲突时换端口并指定后端目标：
+
+```bash
+cd harness && uv run uvicorn agentforge.server:app --host 127.0.0.1 --port 8016
+AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
+```
+
+## 核心能力
+
+### 智能体循环：思考 → 行动 → 观察
+
+```text
+用户输入 → 读取会话记忆 → 思考 → 选择工具 → 执行工具 → 观察结果
+                              ↑                         │
+                              └─────────────────────────┘
+                         → 输出最终回答 → 提交成功轮次记忆
+```
+
+循环带停止条件与并发保护：迭代上限、无进展检测、取消、失败恢复与超时；长上下文按摘要 + 近期消息压缩，并可从检查点恢复。执行轨迹来自真实事件，不臆造模型思考。
+
+### 工具
+
+| 类别 | 工具 |
+| --- | --- |
+| 文件 | `read_file`、`write_file`、`grep`、`glob`（限定在会话工作区，阻止凭据路径与 shell 语法） |
+| 命令 | `run_command`（Docker 沙箱内执行，超时与 PID 受限） |
+| 技能 | `list_skills`、`load_skill`、`install_skill`、`delete_skill` |
+| MCP | 通过 Streamable HTTP 注册外部服务，工具按命名空间暴露 |
+
+### Docker 沙箱
+
+- 非 root 运行、只读根分区、仅工作区可写、默认禁用网络、不继承宿主环境变量（只传 `PATH`/`LANG`/`HOME`）。
+- 预热池按会话归属隔离，空闲回收；工作区快照以 tar 存入 GridFS，恢复前校验归属、完整性与归档路径。
+- 沙箱失败**不会**回退到宿主执行。离线命令与已安装技能脚本默认自动执行；宿主命令、技能安装、MCP 调用仍需人工确认（见 [ADR-0013](docs/adr/0013-autonomous-docker-commands.md)）。
+
+### 技能与 MCP
+
+- 技能可从**公开 GitHub**（按 commit 固定）、**沙箱工作区**或**显式内联**导入；导入前校验、导入后按 SHA-256 同步进沙箱，`SKILL.md` 注入提示词。
+- 单文件上限 1 MB、整包 5 MB、100 个文件、`SKILL.md` 24 KB；安装过程不执行代码、不装依赖。
+- MCP 以无凭据环境启动并绑定独立工作区；外部调用一律需要审批。
+
+### 人工审批
+
+需要确认的操作会挂起执行，前端在**输入框上方**展示审批卡（可滚动查看参数、允许 / 拒绝 / 停止），审批结果按轮次折叠进会话记录，便于回溯。超时一律拒绝（见 [ADR-0008](docs/adr/0008-sandbox-runtime-approval-ui.md)）。
+
+### 产物与预览
+
+`write_file` 产出的 PDF / Excel / PPT / HTML / PNG 会连同本地 CSS、JS、图片打包为不可变产物存储，可下载、可在应用内预览（HTML 预览为净化环境，不执行脚本）。单个 HTML 2 MB、每轮 20 个条目（见 [ADR-0012](docs/adr/0012-workspace-writes-and-html-delivery.md)）。
+
+### 前端流式体验
+
+- **思考 / 行动 / 观察活动条**：运行中叙述当前阶段（正在思考 → 正在调用 *工具* → 正在生成回答 → 已完成 · N 步 · X 秒），步骤以阶段徽章 + 工具名单行呈现，完成后自动折叠。
+- **稳定的流式渲染**：已完成的段落按块 memo 渲染，未闭合段落以纯文本增长并带光标，按 ~30fps 合帧；只在用户停留在底部时跟随滚动。
+- **产物预览**：≥1101px 时自动打开；窄视口改为手动点开，避免全屏预览遮住整段会话。
+- 中英文双语，明暗主题，Markdown 与代码复制。
+
+## 项目结构
+
+```text
+AI-CHAT-Harness/
+├── src/                  # 前端：app / features(chat, agents) / shared / infrastructure
+├── harness/
+│   ├── src/agentforge/   # FastAPI 运行时：api、loop、gateway、middleware、sandbox、
+│   │                     #   tools、skills、capabilities、artifacts、permissions、store
+│   └── tests/            # unit + e2e（真实 Docker / MongoDB 用例会自动跳过缺口环境）
+├── docs/                 # IMPLEMENTATION、CAPABILITIES 与 ADR 0001-0013
+├── mcp-server/           # 独立 MCP 示例服务
+├── examples/skills/      # 示例技能包
+├── scripts/              # i18n 检查与浏览器验证脚本
+└── end/                  # 原始 AI-CHAT Node 后端（参考保留，不再驱动本项目）
+```
+
+## 验证
+
+```bash
+npx tsc --noEmit                 # TypeScript 检查
+npm run check:i18n               # 中英文资源一致性
+npm run lint                     # 前端 lint（覆盖迁移的基础设施与智能体 API）
+npm run build                    # 前端生产构建
+cd harness
+uv run ruff check src tests     # 后端 lint
+uv run pytest tests -q          # 后端全量测试（含真实 Docker / MongoDB 用例）
+```
+
+Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验证脚本位于 `scripts/`，部分会调用真实模型并产生费用。
+
+## 边界与限制
+
+- 面向**可信单用户、本地回环**的开发运行时，**尚未实现认证与多租户隔离**；对外暴露前必须在部署层加访问控制（下一阶段 M2A / T15.A1-A4）。
+- 受限工具不等于 Docker 安全边界，真正隔离由沙箱提供。
+- 尚未提供通用联网搜索；命令执行只在**离线** Docker 沙箱内进行，不能访问外网。
+- 产物预览为净化环境，交互脚本只在下载后的文件中运行。
+
+## 文档索引
+
+- [实现与验收记录](docs/IMPLEMENTATION.md) · [待办与决策](NOTES.md)
+- [技能与 MCP 能力说明](docs/CAPABILITIES.md)
+- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md)
+
+## 常见问题
+
+- **健康检查 `degraded`**：MongoDB 未启动或 `MONGODB_URI` 不对。
+- **运行返回 503**：未配置 `DEEPSEEK_API_KEY`，或密钥无对应模型权限。
+- **接口 404 / 无流式**：确认前端走的是 Vite 代理（`/api` → 后端），且反向代理未缓冲 SSE、读取超时大于 300 秒。
+- **沙箱相关失败**：检查 Docker 是否运行、镜像是否可用；沙箱失败不会回退宿主。
+- **Docker Hub 拉取失败**：可用 `public.ecr.aws/docker/library/{mongo:7,python:3.12-slim}` 后本地打 tag。
 
 ---
 
-# AI Chat
+# 附录：原始 AI-CHAT 说明（旧后端 `end/`，仅供参考）
 
-基于 **React + TypeScript + Express + LangChain / LangGraph** 的全栈 AI 助手，支持多模型对话、ReAct 智能体、持久化会话记忆、文件生成与实时预览、图片理解和文生图。
+以下为 AI-CHAT 2.1.1 的原始使用说明，描述的是已停止驱动本项目的 Node/Express + LangGraph 后端，其中的环境变量、端口与工具**不适用于 Harness**。
 
 [在线体验](http://118.31.167.0:3000/ai) · [后端接口与配置](./end/README.md) · [工程结构规范](./ARCHITECTURE.md)
 
 > 在线环境可能与当前分支版本不同，本文以仓库代码为准。
 
-## 功能概览
+### 功能概览（旧后端）
 
-| 功能 | 当前能力 |
+| 功能 | 旧后端能力 |
 | --- | --- |
 | 多模型对话 | DeepSeek、通义千问及自定义 OpenAI 兼容模型；按文本、多模态、文生图、自定义分类 |
 | 深度思考 | 流式展示模型返回的思考内容，显示耗时，支持手动折叠，完成后默认保持展开 |
@@ -32,9 +192,9 @@
 | 会话管理 | 浏览器本地历史、重命名、置顶、删除、JSON 导入导出、重新生成 |
 | 交互与国际化 | 中英文、明暗主题、Markdown、代码复制、截图分享、移动端适配 |
 
-## 快速开始
+### 快速开始
 
-### 1. 环境与依赖
+#### 1. 环境与依赖
 
 需要 **Node.js >= 22.13.0** 和 npm；后端的 SQLite checkpoint 依赖此运行环境。在项目根目录执行：
 
@@ -43,7 +203,7 @@ npm ci
 npm ci --prefix end
 ```
 
-### 2. 配置环境变量
+#### 2. 配置环境变量
 
 在根目录创建 `.env.development`：
 
@@ -68,7 +228,7 @@ DEEPSEEK_API_KEY=替换为你的DeepSeek密钥
 
 密钥只放在后端环境中，不能写入 `VITE_*` 变量；这些前端变量会进入浏览器构建产物。环境文件已由 `.gitignore` 排除，请自行创建。
 
-### 3. 启动前后端
+#### 3. 启动前后端
 
 终端一，启动后端（默认端口 `3001`，支持代码变更自动重启）：
 
@@ -90,9 +250,9 @@ npm run dev -- --host 127.0.0.1 --port 5175
 
 前端直接请求 `VITE_CHAT_BASE_URL`，当前 Vite 配置没有 API 代理。模型、上传、智能体等接口会基于该地址推导，因此应填写本项目后端的完整聊天接口地址，而非供应商 API 地址。
 
-## 模型与使用方式
+### 模型与使用方式
 
-### 内置模型
+#### 内置模型
 
 | 模型 ID | 用途与区别 |
 | --- | --- |
@@ -105,7 +265,7 @@ npm run dev -- --host 127.0.0.1 --port 5175
 
 能力标签来自后端模型配置，实际可用性以供应商接口和账号权限为准。“多模态”分类目前指图片理解，不代表音频、视频能力。
 
-### 自定义模型
+#### 自定义模型
 
 在 **切换模型 → 模型配置** 中新增、编辑或删除自定义模型，填写展示名称、上游模型 ID、Base URL 和 API Key，并按实际能力设置图片理解、工具调用选项。
 
@@ -115,13 +275,13 @@ npm run dev -- --host 127.0.0.1 --port 5175
 - 配置是服务端共享配置，保存在 `end/local_storage/custom-models.json`，不是每个用户独立的模型列表。
 - 模型列表不会返回 API Key；编辑时留空密钥表示保留原值。配置文件中包含密钥，需要随服务端数据妥善保管。
 
-### 深度思考
+#### 深度思考
 
 选择支持深度思考的模型并打开开关后，发送消息即显示“思考中…”，收到 `reasoning_content` 后实时展示。思考结束后显示耗时，默认保持展开，可点击标题手动折叠；历史消息也默认展开。
 
 耗时按前端收到首个思考片段到首个回答片段的时间计算，不代表供应商内部精确计算时间。旧消息若没有计时数据，不会补造耗时。
 
-### 图片理解
+#### 图片理解
 
 选择支持图片理解的模型后上传图片，等待上传完成再发送问题。
 
@@ -130,13 +290,13 @@ npm run dev -- --host 127.0.0.1 --port 5175
 - 应用默认单文件上限为 **20 MiB**。DeepSeek 原生上传当前只接受图片，不能据此上传 PDF、Word 等文档。
 - 移除输入框附件不会删除 DeepSeek 端已上传的文件。
 
-### 文生图
+#### 文生图
 
 先选择 **Qwen-Image-2.0**，再输入画面描述。需要配置 `DASHSCOPE_API_KEY`，且密钥地域、接口和模型权限一致。
 
 文生图使用独立 LangGraph 流程调用 LangChain 图片工具，流式返回执行状态，图片生成完毕后展示 PNG，支持预览、全屏和下载。当前为单轮生成，不支持连续图片编辑或像素级流式输出，普通聊天模型不会自动获得文生图能力。
 
-## 智能体模式
+### 智能体模式
 
 在输入区开启智能体模式，使用支持工具调用的模型。主智能体通过 LangChain 消息与工具接口执行任务，由 LangGraph 管理循环和记忆。
 
@@ -149,7 +309,7 @@ npm run dev -- --host 127.0.0.1 --port 5175
 
 执行期间通过 SSE 展示步骤、工具参数、观察结果和回答。页面可显示“正在调用天气工具”“已生成并写入文件”等实际执行事件，并支持展开原始参数与结果。执行轨迹来自真实事件；模型思考文本仅在上游返回时展示。
 
-### 可用工具
+#### 可用工具
 
 | 工具 | 用途 |
 | --- | --- |
@@ -162,7 +322,7 @@ npm run dev -- --host 127.0.0.1 --port 5175
 
 天气工具需要高德 **Web 服务类型 Key**，免费额度及使用范围以高德平台规则为准。研究角色当前不等于联网搜索；项目尚未提供通用网页搜索或任意代码执行工具。
 
-### 记忆与执行边界
+#### 记忆与执行边界
 
 - 使用 `sessionId` 区分会话、`turnId` 标识轮次，SQLite checkpoint 保存在 `end/local_storage/agent-checkpoints.sqlite`。
 - 仅成功完成的轮次提交为后续对话记忆；失败、取消或截断不会覆盖已成功的历史。最近一轮重试支持替换该轮记忆。
@@ -171,7 +331,7 @@ npm run dev -- --host 127.0.0.1 --port 5175
 - 删除浏览器会话不等于删除服务端 checkpoint 或生成文件。
 - 当前默认最多 12 次推理迭代，智能体请求总超时 5 分钟；不再设置应用层统一 `2048 token` 输出上限，但仍受供应商限制。
 
-### 文件生成与同步预览
+#### 文件生成与同步预览
 
 | 格式 | 实现与预览方式 |
 | --- | --- |
@@ -182,7 +342,7 @@ npm run dev -- --host 127.0.0.1 --port 5175
 
 左侧继续执行时，右侧根据已收到的内容更新草稿；保存后切换为最终文件预览。预览共享页面顶栏，支持全屏和下载原文件。HTML 预览限制脚本与远程资源，不等同于完整浏览器运行环境；Excel 不支持任意公式执行。
 
-## 环境配置参考
+### 环境配置参考
 
 以下变量放在 `end/.env`，按需配置：
 
@@ -211,7 +371,7 @@ OSS_ACCESS_KEY_SECRET=你的AccessKeySecret
 
 OSS 参数也支持 `ALI_OSS_*` 别名。仅使用文本对话、DeepSeek 原生图片上传或文件生成时，无需配置 OSS。
 
-## 项目结构
+### 项目结构
 
 ```text
 AI-CHAT/
@@ -240,7 +400,7 @@ AI-CHAT/
 
 前端中英文资源位于 `src/app/i18n/locales/`，后端资源位于 `end/src/i18n/locales/`。语言默认跟随浏览器，支持用户切换与持久化；用户输入和模型生成内容不会自动翻译。
 
-## 开发与验证
+### 开发与验证
 
 在项目根目录执行：
 
@@ -266,7 +426,7 @@ python scripts/verify_i18n.py --url http://localhost:5174/ai
 
 这些端到端脚本可能调用真实模型并产生费用；`verify_i18n.py` 默认不发送真实模型请求，添加 `--live` 才执行在线对话验证。后端真实记忆验证入口为 `node end/scripts/verifyMemory.js`。
 
-## 部署与数据保留
+### 部署与数据保留
 
 1. 在根目录创建 `.env.production`，将 `VITE_CHAT_BASE_URL` 设置为用户浏览器可访问的生产聊天接口完整地址，再执行 `npm run build`。前端变量在构建时固化，不能只修改服务器环境而不重新构建。
 2. 将 `dist/` 部署到静态服务器，为 `/ai` 等前端路由配置回退到 `index.html`。
@@ -278,7 +438,7 @@ python scripts/verify_i18n.py --url http://localhost:5174/ai
 
 当前没有完整的用户登录、多租户数据隔离体系。对外提供服务时，应在部署层配置访问控制；模型管理令牌只保护模型配置操作。
 
-## 常见问题
+### 常见问题
 
 - **接口 404**：检查 `VITE_CHAT_BASE_URL` 是否指向本项目后端的 `/api/chat/completions`，以及代理是否保留 `/api` 路径。不要填前端端口或供应商地址。
 - **请求 400 / 模型不可用**：查看接口返回的具体错误与后端日志，核对模型 ID、供应商权限、工具调用能力和附件格式，不能仅凭已配置 Key 判断模型可用。
@@ -287,7 +447,7 @@ python scripts/verify_i18n.py --url http://localhost:5174/ai
 - **重启后记忆或文件丢失**：确认服务始终使用同一份 `end/local_storage/`，并检查部署是否覆盖了运行数据。
 - **更换 API 地址后没有生效**：开发环境需重启 Vite，生产环境需重新构建并部署前端。
 
-## 相关文档
+### 相关文档
 
 - [后端接口与详细配置](./end/README.md)
 - [项目分层与扩展规范](./ARCHITECTURE.md)
