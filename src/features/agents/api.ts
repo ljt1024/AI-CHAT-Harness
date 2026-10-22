@@ -23,12 +23,20 @@ export async function downloadAgentArtifact(fileId: string, signal?: AbortSignal
 }
 
 export interface AgentRequest {
+  skills?: string[];
+  mcp_servers?: string[];
+  sandbox?: boolean;
   fileIds?: string[];
   input: string;
   sessionId: string;
   agentIds?: string[];
   model?: string;
   turnId?: string;
+}
+
+export async function resolveApproval(id: string, approved: boolean): Promise<void> {
+  const response = await postJSON(`/approvals/${encodeURIComponent(id)}`, { approved }, languageHeaders());
+  if (!response.ok) throw await readError(response);
 }
 
 export async function runAgents(request: AgentRequest, signal?: AbortSignal): Promise<AgentResult> {

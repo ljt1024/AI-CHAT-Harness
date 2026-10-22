@@ -13,7 +13,8 @@ class MongoDBStore:
         self.db = self.client[database]
 
     async def setup(self):
-        for name in ("agents", "sessions", "traces", "turns", "tool_calls", "checkpoints", "approvals"):
+        for name in ("agents", "sessions", "traces", "turns", "tool_calls", "checkpoints", "approvals",
+                     "skills", "mcp_servers", "artifacts"):
             await self.db[name].create_index("id", unique=True)
         await self.db.traces.create_index("sessionId")
         await self.db.turns.create_index([("trace_id", 1), ("index", 1)], unique=True)

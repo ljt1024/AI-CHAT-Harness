@@ -1,19 +1,24 @@
 import { languageHeaders } from '@/app/i18n';
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import ChatHeaderOperate from '@/shared/components/ChatHeaderOperate';
 import MessageItem from '@/shared/components/MessageItem';
 import Sidebar from '@/shared/components/Sidebar';
 import Share from '@/shared/components/Share';
+import Dialog from '@/shared/components/Dialog';
 import ChatInputControl from '@/shared/components/ChatInputControl';
 import ArrowDownIcon from '@/shared/assets/arrowDown.svg?react';
 import { useChat, useChatDispatch } from '@/app/providers/ChatContext';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import { newChat, storageMessages, ensureAgentTurnId, removeLastAssistantMessage, Message, getSelectId, getMessageByCovId } from '@/shared/utils/localMessages'
-import { MODEL_STORAGE_KEY } from './constants';
+import { MODEL_STORAGE_KEY, SHOW_SANDBOX_AND_SKILLS_UI } from './constants';
 import { SSEData } from './types';
 import { useChatModels } from './hooks/useChatModels';
 import { useFileUpload } from './hooks/useFileUpload';
+import { useStickToBottom } from './hooks/useStickToBottom';
 import { streamAgents } from '@/features/agents/api';
+import { ApprovalCard, type Approval } from '@/features/agents/components/ApprovalCard';
+import type { MessageApproval } from '@/shared/utils/localMessages';
+import { CapabilitiesPanel, type CapabilitySelection } from '@/features/agents/components/CapabilitiesPanel';
 import type { AgentArtifact } from '@/features/agents/types';
 import { ArtifactPreviewPanel } from '@/features/agents/components/ArtifactPreviewPanel';
 import {
@@ -26,29 +31,80 @@ import {
 import { WelcomeMascot } from './components/WelcomeMascot';
 import './chat.css';
 
+/**
+ * At or below 1100px the artifact preview panel covers the whole message area
+ * (chat.css marks .messages-content as visibility:hidden), so auto-opening it
+ * while an artifact streams in would hide the entire conversation. Manual
+ * opens from artifact cards stay allowed at any width.
+ */
+const canAutoOpenPreview = () => window.matchMedia('(min-width: 1101px)').matches;
+
 const ChatAI: React.FC = () => {
   const controllerRef = useRef<AbortController | null>(null);
   const chatApiUrl = ((import.meta as any).env.VITE_CHAT_BASE_URL || '/api/chat/completions') as string
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [sandbox, setSandbox] = useState(true);
+  const [capabilities, setCapabilities] = useState<CapabilitySelection>({ skills: [], mcp_servers: [] });
+  const [loadedSkills, setLoadedSkills] = useState<string[]>([]);
+  const [skillCatalogVersion, setSkillCatalogVersion] = useState(0);
+  const [pendingSkillSession, setPendingSkillSession] = useState<CapabilitySelection | null>(null);
+  const [approvals, setApprovals] = useState<(Approval & { sessionId: string })[]>([]);
   const [isAgentMode, setIsAgentMode] = useState(() => localStorage.getItem('chat.agentMode') === 'true');
   const [liveFiles, setLiveFiles] = useState<{ sessionId: string; files: AgentArtifact[] }>({ sessionId: '', files: [] });
   const [previewSelection, setPreviewSelection] = useState<{ sessionId: string; artifact: AgentArtifact } | null>(null);
-  const setPreviewArtifact = (artifact: AgentArtifact) => setPreviewSelection({ sessionId: getSelectId() || '', artifact });
+  const setPreviewArtifact = useCallback((artifact: AgentArtifact) => {
+    setPreviewSelection({ sessionId: getSelectId() || '', artifact });
+  }, []);
   const [isShowScrollBtn, setIsShowScrollBtn] = useState(false)
   const [isShowShare, setIsShowShare] = useState(false)
   const [shareTargetElement, setShareTargetElement] = useState<HTMLElement | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const messagesRef = useRef<HTMLDivElement>(null);
+  const { containerRef: messagesRef, follow: followStream, scrollToBottom: scrollMessagesToBottom } = useStickToBottom();
   const streamFrameRef = useRef<number | null>(null)
+  const streamTimerRef = useRef<number | null>(null)
+  const streamLastPaintRef = useRef(0)
   const streamPendingMessageRef = useRef<Message | null>(null)
   const { t } = useLanguage()
   const { messages } = useChat()
+  const activeSessionId = getSelectId();
+  const sessionApprovals = approvals.filter(approval => approval.sessionId === activeSessionId);
+  const pendingApprovals = sessionApprovals.filter(approval => approval.status === 'pending');
+  const pendingApproval = pendingApprovals[0];
+  const composerRef = useRef<HTMLDivElement>(null);
+  const approvalFocusSession = useRef<string | null>(null);
   const dispatch = useChatDispatch()
-  const previewArtifact = previewSelection?.sessionId === getSelectId() && messages.length ? previewSelection.artifact : null
+  const previewArtifact = !pendingApproval && previewSelection?.sessionId === getSelectId() && messages.length ? previewSelection.artifact : null
   const previewArtifacts = [...messages.flatMap(message => message.artifacts || []), ...(liveFiles.sessionId === getSelectId() ? liveFiles.files : [])]
   if (previewArtifact && !previewArtifacts.some(file => file.fileId === previewArtifact.fileId)) previewArtifacts.push(previewArtifact)
   const isNewConversation = messages.length === 0 && localStorage.getItem('isNewCov') === 'true'
+  const lastMessage = messages[messages.length - 1]
+  // The assistant bubble renders its own live state (agent activity line or caret),
+  // so the extra dot row would only add a block that pops in and out mid-stream.
+  const showTypingIndicator = isLoading && !pendingApproval
+    && !lastMessage?.agentStatus && !lastMessage?.content && !lastMessage?.reasoning_content
+  useEffect(() => {
+    if (pendingApproval) approvalFocusSession.current = activeSessionId;
+    else if (!isLoading && approvalFocusSession.current === activeSessionId) {
+      composerRef.current?.querySelector('textarea')?.focus();
+      approvalFocusSession.current = null;
+    }
+  }, [pendingApproval, activeSessionId, isLoading]);
+  useEffect(() => {
+    const draft = isNewConversation || !activeSessionId;
+    // The sandbox checkbox is hidden, so new conversations always use Docker while existing
+    // conversations keep the environment they were created with (switching is refused by the API).
+    setSandbox(draft || localStorage.getItem(`chat.sandbox.${activeSessionId}`) === 'true');
+    try {
+      // With the panel hidden there is no way to change selections, so do not resend them.
+      const saved = JSON.parse(draft || !SHOW_SANDBOX_AND_SKILLS_UI ? '{}'
+        : localStorage.getItem(`chat.capabilities.${activeSessionId}`) || '{}');
+      setCapabilities({ skills: Array.isArray(saved.skills) ? saved.skills : [],
+        mcp_servers: Array.isArray(saved.mcp_servers) ? saved.mcp_servers : [] });
+      const loaded = JSON.parse(draft ? '[]' : localStorage.getItem(`chat.loadedSkills.${activeSessionId}`) || '[]');
+      setLoadedSkills(Array.isArray(loaded) ? loaded : []);
+    } catch { setCapabilities({ skills: [], mcp_servers: [] }); setLoadedSkills([]); }
+  }, [activeSessionId, isNewConversation]);
   const hasSelectedConversation = Boolean(getSelectId())
   const isWelcomeConversation = messages.length === 0 && (isNewConversation || !hasSelectedConversation)
   const selectedConversation = useMemo(() => {
@@ -76,6 +132,31 @@ const ChatAI: React.FC = () => {
     defaultDescription: t('chat.defaultDescription')
   })
   const isImageModel = selectedModel?.supportsImageGeneration === true;
+  const selectCapabilities = (next: CapabilitySelection) => {
+    if (next.skills.length && !sandbox && messages.length) {
+      setPendingSkillSession(next);
+      return;
+    }
+    if (next.skills.length) setSandbox(true);
+    setCapabilities(next);
+  };
+  const prepareSkillSession = () => {
+    if (messages.length) setPendingSkillSession(capabilities);
+    else setSandbox(true);
+  };
+  const confirmSkillSession = () => {
+    if (!pendingSkillSession) return;
+    newChat({ id: selectedModelId, name: selectedModelName });
+    const id = getSelectId();
+    localStorage.setItem('isNewCov', 'false');
+    localStorage.setItem(`chat.sandbox.${id}`, 'true');
+    localStorage.setItem(`chat.capabilities.${id}`, JSON.stringify(pendingSkillSession));
+    setSandbox(true);
+    setCapabilities(pendingSkillSession);
+    setPendingSkillSession(null);
+    dispatch({ type: 'clearMessages' });
+    dispatch({ type: 'getCovList' });
+  };
   const {
     uploadedFiles,
     isUploadingFile,
@@ -94,19 +175,28 @@ const ChatAI: React.FC = () => {
     setInputText(value);
   }
 
-  // 自动滚动到底部
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({});
+  // 跟随流式输出的滚动：仅在用户停留底部时贴底，避免每一帧重置平滑滚动
+  const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
+    scrollMessagesToBottom(behavior);
   };
 
+  /** Streaming repaints are capped at ~30fps so text growth stays smooth instead of jittery. */
+  const STREAM_PAINT_INTERVAL = 32;
+
   const cancelStreamRender = () => {
-    if (streamFrameRef.current === null) return
-    cancelAnimationFrame(streamFrameRef.current)
-    streamFrameRef.current = null
+    if (streamTimerRef.current !== null) {
+      window.clearTimeout(streamTimerRef.current)
+      streamTimerRef.current = null
+    }
+    if (streamFrameRef.current !== null) {
+      cancelAnimationFrame(streamFrameRef.current)
+      streamFrameRef.current = null
+    }
   }
 
-  const flushStreamRender = () => {
-    cancelStreamRender()
+  const paintStream = () => {
+    streamFrameRef.current = null
+    streamLastPaintRef.current = performance.now()
     const pendingMessage = streamPendingMessageRef.current
     if (!pendingMessage) return
     dispatch({
@@ -115,17 +205,18 @@ const ChatAI: React.FC = () => {
     } as any)
   }
 
+  const flushStreamRender = () => {
+    cancelStreamRender()
+    paintStream()
+  }
+
   const scheduleStreamRender = () => {
-    if (streamFrameRef.current !== null) return
-    streamFrameRef.current = requestAnimationFrame(() => {
-      streamFrameRef.current = null
-      const pendingMessage = streamPendingMessageRef.current
-      if (!pendingMessage) return
-      dispatch({
-        type: 'addMessages',
-        messages: cloneMessage(pendingMessage)
-      } as any)
-    })
+    if (streamTimerRef.current !== null || streamFrameRef.current !== null) return
+    const wait = Math.max(0, STREAM_PAINT_INTERVAL - (performance.now() - streamLastPaintRef.current))
+    streamTimerRef.current = window.setTimeout(() => {
+      streamTimerRef.current = null
+      streamFrameRef.current = requestAnimationFrame(paintStream)
+    }, wait)
   }
 
   useEffect(() => {
@@ -149,9 +240,7 @@ const ChatAI: React.FC = () => {
   useEffect(() => {
     return () => {
       controllerRef.current?.abort();
-      if (streamFrameRef.current !== null) {
-        cancelAnimationFrame(streamFrameRef.current)
-      }
+      cancelStreamRender()
     }
   }, [])
 
@@ -162,8 +251,8 @@ const ChatAI: React.FC = () => {
   }, [isWelcomeConversation, messages.length])
 
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    followStream();
+  }, [messages, followStream]);
 
 
   const getLoadingMessage = (): Message => ({
@@ -264,7 +353,8 @@ const ChatAI: React.FC = () => {
 
       if (!response.ok || !response.body) {
         const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.msg || payload.error?.message || t('error.status', { status: response.status }))
+        throw new Error(payload.msg || payload.error?.message ||
+          (typeof payload.detail === 'string' ? payload.detail : t('error.status', { status: response.status })))
       }
 
       const reader = response.body.getReader();
@@ -289,6 +379,7 @@ const ChatAI: React.FC = () => {
         streamPendingMessageRef.current = assistantMessage
         flushStreamRender()
       }
+      let streamCompleted = false;
       const parseSSEEvent = (event: string) => {
         const lines = event
           .split('\n')
@@ -296,32 +387,30 @@ const ChatAI: React.FC = () => {
           .map((line) => line.slice(5).trimStart())
           .join('\n')
         if (!lines) return
-        try {
-          // sse最终以'data: [DONE]'结束
-          if (lines === '[DONE]') {
-            finishReasoning();
-            assistantMessage.isLoading = false
-            flushAssistantRender()
-            return
-          }
-          let data: SSEData = JSON.parse(lines);
-          if (data.usage) {
-            assistantMessage.usage = data.usage
-          }
-
-          const delta = data.choices?.[0]?.delta;
-          if (delta?.reasoning_content) {
-            reasoningStarted ??= performance.now();
-            assistantMessage.reasoning_content += delta.reasoning_content;
-          }
-          if (delta?.content) {
-            finishReasoning();
-            assistantMessage.content += delta.content;
-          }
-          scheduleAssistantRender();
-        } catch (error) {
-          console.log(error)
+        // sse最终以'data: [DONE]'结束
+        if (lines === '[DONE]') {
+          streamCompleted = true;
+          finishReasoning();
+          assistantMessage.isLoading = false
+          flushAssistantRender()
+          return
         }
+        const data: SSEData = JSON.parse(lines);
+        if (data.error) throw new Error(data.error.message || t('error.request'));
+        if (data.usage) {
+          assistantMessage.usage = data.usage
+        }
+
+        const delta = data.choices?.[0]?.delta;
+        if (delta?.reasoning_content) {
+          reasoningStarted ??= performance.now();
+          assistantMessage.reasoning_content += delta.reasoning_content;
+        }
+        if (delta?.content) {
+          finishReasoning();
+          assistantMessage.content += delta.content;
+        }
+        scheduleAssistantRender();
       }
 
       // 持续读取流数据
@@ -344,6 +433,7 @@ const ChatAI: React.FC = () => {
       if (streamBuffer.trim()) {
         parseSSEEvent(streamBuffer)
       }
+      if (!streamCompleted) throw new Error(t('error.incompleteStream'));
       finishReasoning();
       assistantMessage.isLoading = false
       flushAssistantRender()
@@ -375,8 +465,11 @@ const ChatAI: React.FC = () => {
   }
 
   const requestAgentReply = async (userMessage: Message, appendUser: boolean) => {
+    setApprovals([]);
     const sessionId = getSelectId()
     if (!sessionId) return
+    localStorage.setItem(`chat.sandbox.${sessionId}`, String(sandbox));
+    localStorage.setItem(`chat.capabilities.${sessionId}`, JSON.stringify(capabilities));
     const turnId = ensureAgentTurnId(userMessage)
     userMessage = { ...userMessage, agentTurnId: turnId }
     const model = { id: selectedModelId, name: selectedModelName }
@@ -392,11 +485,42 @@ const ChatAI: React.FC = () => {
     if (appendUser) storageMessages(userMessage, model)
     dispatch({ type: 'addMessages', messages: appendUser ? [userMessage, assistant] : [assistant] })
     const render = () => {
-      streamPendingMessageRef.current = { ...assistant, agentSteps: [...(assistant.agentSteps || [])] }
+      // Steps are replaced immutably per event, so the array reference can be shared
+      // with the snapshot. Copying it here would force the trace to repaint every frame.
+      streamPendingMessageRef.current = { ...assistant }
       scheduleStreamRender()
     }
     try {
-      await streamAgents({ input: userMessage.content, model: selectedModelId, sessionId, turnId, fileIds: userMessage.attachments?.map(file => file.fileId).filter((id): id is string => Boolean(id)) }, (event) => {
+      await streamAgents({ input: userMessage.content, model: selectedModelId, sessionId, turnId, sandbox, ...capabilities, fileIds: userMessage.attachments?.map(file => file.fileId).filter((id): id is string => Boolean(id)) }, (event) => {
+        if (event.type === 'skill_installed') setSkillCatalogVersion(version => version + 1);
+        if (event.type === 'skill_deleted') {
+          const removed = event.skill_id;
+          setSkillCatalogVersion(version => version + 1);
+          setCapabilities(current => ({ ...current, skills: current.skills.filter(id => id !== removed) }));
+          setLoadedSkills(items => {
+            const next = items.filter(id => id !== removed);
+            localStorage.setItem(`chat.loadedSkills.${sessionId}`, JSON.stringify(next));
+            return next;
+          });
+        }
+        if (event.type === 'skill_loaded') {
+          setLoadedSkills(items => {
+            const next = [...new Set([...items, event.skill_id])];
+            localStorage.setItem(`chat.loadedSkills.${sessionId}`, JSON.stringify(next));
+            return next;
+          });
+        }
+        if (event.type === 'await_approval') {
+          const record: MessageApproval = { id: event.call_id, tool: event.tool, args: event.arguments, status: 'pending' };
+          assistant.approvals = [...(assistant.approvals || []).filter(item => item.id !== record.id), record];
+          setApprovals(items => [...items, { sessionId, id: event.call_id, tool: event.tool, args: event.arguments, status: 'pending' }]);
+          setPreviewSelection(previous => previous?.sessionId === sessionId ? null : previous);
+        }
+        if (event.type === 'approval_resolved') {
+          const status = (event.approved ? 'approved' : 'denied') as MessageApproval['status'];
+          assistant.approvals = (assistant.approvals || []).map(item => item.id === event.call_id ? { ...item, status } : item);
+          setApprovals(items => items.map(item => item.id === event.call_id ? { ...item, status } : item));
+        }
         if (event.type === 'start') assistant.memoryMessages = event.memoryMessages
         if (event.type === 'memory') assistant.summarizedMessages = event.summarizedMessages
         if (event.type === 'preview') {
@@ -408,12 +532,14 @@ const ChatAI: React.FC = () => {
             fileName: `${draft.title || t('preview.generatingName')}.${draft.format}`, mimeType: '', size: 0, downloadPath: '', createdAt: '',
           };
           setLiveFiles(previous => ({ sessionId, files: [...(previous.sessionId === sessionId ? previous.files : []).filter(item => item.fileId !== file.fileId), file] }));
-          setPreviewSelection(previous => first || (previous?.sessionId === sessionId && previous.artifact.fileId === file.fileId) ? { sessionId, artifact: file } : previous);
+          const followingDraft = (previous: { sessionId: string; artifact: AgentArtifact } | null) => previous?.sessionId === sessionId && previous.artifact.fileId === file.fileId;
+          setPreviewSelection(previous => (first && canAutoOpenPreview()) || followingDraft(previous) ? { sessionId, artifact: file } : previous);
         }
         if (event.type === 'artifact') {
           assistant.artifacts = [...(assistant.artifacts || []).filter((file) => file.fileId !== event.artifact.fileId), event.artifact]
           setLiveFiles(previous => ({ ...previous, files: previous.files.filter(file => !event.artifact.toolCallId || file.toolCallId !== event.artifact.toolCallId) }));
-          setPreviewSelection(previous => (previous?.sessionId === sessionId && previous.artifact.toolCallId === event.artifact.toolCallId) || seenPreviews.size === 0 ? { sessionId, artifact: event.artifact } : previous);
+          const followingArtifact = (previous: { sessionId: string; artifact: AgentArtifact } | null) => previous?.sessionId === sessionId && previous.artifact.toolCallId === event.artifact.toolCallId;
+          setPreviewSelection(previous => followingArtifact(previous) || (seenPreviews.size === 0 && canAutoOpenPreview()) ? { sessionId, artifact: event.artifact } : previous);
         }
         if (event.type === 'answer_start') assistant.content = ''
         if (event.type === 'delta') assistant.content += event.text
@@ -424,13 +550,25 @@ const ChatAI: React.FC = () => {
         }
         if (event.type === 'step') {
           const steps = assistant.agentSteps || []
-          assistant.agentSteps = steps.some((step) => step.id === event.step.id)
-            ? steps.map((step) => step.id === event.step.id ? event.step : step)
-            : [...steps, event.step]
+          // A tool call arrives as an action step and its result reuses the same id
+          // as an observation step. Keeping both rows is what makes the run read as
+          // 思考 → 行动 → 观察; only replays of the very same phase are merged.
+          const sameStep = (step: { id: string; phase: string }) => step.id === event.step.id && step.phase === event.step.phase;
+          assistant.agentSteps = steps.some(sameStep)
+            ? steps.map((step) => sameStep(step)
+              ? { ...event.step, agentId: event.step.agentId || step.agentId, toolCallId: event.step.toolCallId || step.toolCallId }
+              : step)
+            : [...steps, { ...event.step, agentId: event.step.agentId || steps.find((step) => step.toolCallId === event.step.toolCallId)?.agentId }]
+          // Nothing streams the action's own completion, so the observation closes it.
+          if (event.step.phase === 'observation') {
+            assistant.agentSteps = assistant.agentSteps.map((step) => step.phase === 'action'
+              && step.status === 'running' && Boolean(event.step.toolCallId) && step.toolCallId === event.step.toolCallId
+              ? { ...step, status: 'completed' } : step);
+          }
         }
         if (event.type === 'done') {
           assistant.content = event.result.output
-          assistant.agentSteps = event.result.steps
+          if (event.result.steps.length) assistant.agentSteps = event.result.steps
           assistant.agentStatus = 'completed'
           assistant.artifacts = event.result.artifacts || assistant.artifacts
         }
@@ -448,6 +586,8 @@ const ChatAI: React.FC = () => {
       setLiveFiles(previous => previous.sessionId === sessionId ? { ...previous, files: previous.files.map(finishDraft) } : previous);
       setPreviewSelection(previous => previous?.sessionId === sessionId ? { ...previous, artifact: finishDraft(previous.artifact) } : previous);
       assistant = { ...assistant, isLoading: false }
+      assistant.approvals = assistant.approvals?.map(item => item.status === 'pending' ? { ...item, status: 'closed' } : item)
+      setApprovals(items => items.map(item => item.status === 'pending' ? { ...item, status: 'closed' } : item));
       cancelStreamRender()
       streamPendingMessageRef.current = null
       dispatch({ type: 'addMessages', messages: assistant })
@@ -492,13 +632,15 @@ const ChatAI: React.FC = () => {
     };
 
     if (messages.length === 0) {
-      newChat({
-        id: selectedModelId,
-        name: selectedModelName
-      })
+      const currentId = getSelectId();
+      const current = currentId ? getMessageByCovId(currentId).curMessage : null;
+      if (!current || current.data.length || localStorage.getItem('isNewCov') === 'true') {
+        newChat({ id: selectedModelId, name: selectedModelName })
+      }
     }
     localStorage.setItem('isNewCov', 'false')
     setInputText('');
+    scrollToBottom('auto');
 
     if (isImageModel || (isAgentMode && selectedModel?.supportsTools !== false)) {
       await requestAgentReply(newMessage, true)
@@ -527,6 +669,11 @@ const ChatAI: React.FC = () => {
     if (lastMessage.agentStatus) await requestAgentReply(lastUserMessage, false)
     else await requestAssistantReply(lastUserMessage, false, messages.slice(0, -2))
   }
+
+  // Keep the callback identity stable so memoised history messages are not re-rendered while streaming.
+  const retryHandlerRef = useRef(handleRetryLastAnswer)
+  useEffect(() => { retryHandlerRef.current = handleRetryLastAnswer })
+  const onRetryLastAnswer = useCallback(() => { retryHandlerRef.current() }, [])
 
   const onStopSSE = () => {
     controllerRef.current?.abort();
@@ -565,6 +712,13 @@ const ChatAI: React.FC = () => {
             isModelLoading={isModelsLoading || isLoading}
             onSelectModel={onSelectModel}
           />
+          {SHOW_SANDBOX_AND_SKILLS_UI && isAgentMode && <label className="sandbox-control"><input type="checkbox" checked={sandbox} disabled={isLoading || messages.length > 0 || capabilities.skills.length > 0} onChange={event => setSandbox(event.target.checked)} />{t('approval.sandbox')}</label>}
+          {SHOW_SANDBOX_AND_SKILLS_UI && isAgentMode && <CapabilitiesPanel value={capabilities} onChange={selectCapabilities} disabled={isLoading} sandbox={sandbox} onPrepareSandbox={prepareSkillSession} loadedSkills={loadedSkills} catalogVersion={skillCatalogVersion} />}
+          <Dialog isOpen={pendingSkillSession !== null} onClose={() => setPendingSkillSession(null)}
+            title={t('cap.newSessionTitle')} type="confirm" confirmText={t('cap.newSessionConfirm')}
+            onConfirm={confirmSkillSession}>
+            <p>{t('cap.newSessionBody')}</p>
+          </Dialog>
           <div className="chat-panels">
             <div className='messages-content'>
               <div className='messages-scollWrap' ref={messagesRef}>
@@ -604,11 +758,11 @@ const ChatAI: React.FC = () => {
                         setIsShowShare={setIsShowShare}
                         setShareTarget={setShareTargetElement}
                         canRetry={msg.isBot && !msg.isLoading && index === messages.length - 1 && !isLoading}
-                        onRetry={handleRetryLastAnswer}
+                        onRetry={onRetryLastAnswer}
                         onPreviewArtifact={setPreviewArtifact}
                       />
                     ))}
-                    {isLoading && (
+                    {showTypingIndicator && (
                       <div className="typing-indicator">
                         <div className="dot"></div>
                         <div className="dot"></div>
@@ -625,7 +779,12 @@ const ChatAI: React.FC = () => {
               }
 
               {!isWelcomeConversation && (
-                <ChatInputControl
+                <div className="chat-composer" ref={composerRef}>
+                  {pendingApproval && <div className="approval-inline">
+                    <ApprovalCard key={pendingApproval.id} approval={pendingApproval} onStop={onStopSSE}
+                      pendingCount={pendingApprovals.length} autoFocus />
+                  </div>}
+                  <ChatInputControl
                   inputText={inputText}
                   isLoading={isLoading}
                   supportsFileUpload={supportsFileUpload && (selectedModel?.supportsProviderFiles || !(isAgentMode && selectedModel?.supportsTools !== false))}
@@ -645,11 +804,12 @@ const ChatAI: React.FC = () => {
                   onSubmit={handleSubmit}
                   onStopSSE={onStopSSE}
                 />
+                </div>
               )}
 
-              {!isWelcomeConversation && isShowScrollBtn &&
+              {!isWelcomeConversation && !pendingApproval && isShowScrollBtn &&
                 <div className="chatScrollBottom" onClick={() => {
-                  scrollToBottom()
+                  scrollToBottom('smooth')
                   setIsShowScrollBtn(false)
                 }}>
                   <ArrowDownIcon className="chatScrollBottomIcon" />

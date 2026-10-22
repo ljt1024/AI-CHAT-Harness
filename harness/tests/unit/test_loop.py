@@ -70,6 +70,35 @@ async def test_session_concurrency_and_history(tmp_path):
     assert not runtime.active
 
 
+async def test_current_tool_manifest_overrides_stale_history_without_accumulating(tmp_path):
+    requests = []
+
+    class Capture:
+        async def chat_stream(self, req):
+            requests.append(req)
+            yield ContentDelta(text="Current tools checked")
+            yield Done()
+
+    runtime, _ = make_runtime(tmp_path, "done")
+    runtime.gateway.register("deepseek", Capture())
+    agent = AgentDefinition(name="test", tools=["glob"])
+    stale = {"role": "assistant", "content": "I have no tools and cannot search files."}
+    await runtime.store.put("sessions", {"id": "old", "history": [stale]})
+    for task in ("Search files", "Search again"):
+        await runtime.run(agent, task, "old", EventBus())
+        request = requests[-1]
+        manifest = request.messages[-1]
+        assert manifest["role"] == "system"
+        assert "- glob:" in manifest["content"]
+        assert "- install_skill:" not in manifest["content"]
+        assert "outdated" in manifest["content"]
+        assert request.messages[-2] == {"role": "user", "content": task}
+        assert [s["function"]["name"] for s in request.tools] == ["glob"]
+        history = (await runtime.store.get("sessions", "old"))["history"]
+        assert stale in history
+        assert not any(m["role"] == "system" for m in history)
+
+
 async def test_resume_after_failure_preserves_trace_and_committed_history(tmp_path):
     class CrashAfterCheckpoint:
         async def chat_stream(self, req):
@@ -87,8 +116,14 @@ async def test_resume_after_failure_preserves_trace_and_committed_history(tmp_pa
     checkpoint = await runtime.store.latest_checkpoint("s")
     assert checkpoint["state"]["index"] == 5
     assert "history" not in await runtime.store.get("sessions", "s")
-    runtime.gateway.register("deepseek", Script("done"))
-    result = await runtime.run(agent, "task", "s", EventBus(), resume=True)
+    class Finish:
+        async def chat_stream(self, req):
+            assert "Chinese (zh-CN)" not in req.messages[0]["content"]
+            yield ContentDelta(text="finished")
+            yield Done()
+
+    runtime.gateway.register("deepseek", Finish())
+    result = await runtime.run(agent, "恢复参数不应改变原任务的语言", "s", EventBus(), resume=True)
     assert result.stop_reason == "completed"
     assert result.trace_id == checkpoint["state"]["trace_id"]
     assert result.cost.usd == pytest.approx(0.005)

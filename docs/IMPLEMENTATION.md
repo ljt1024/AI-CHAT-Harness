@@ -34,6 +34,18 @@ The original backend can be started for contract comparison with
 
 ### Update: 2026-10-20
 
+Approval follow-up: offline Docker commands and installed skill scripts now execute automatically,
+as do ordinary workspace writes. Host commands, installation and MCP still require confirmation;
+saved agents with explicit confirm policies are unchanged. No host fallback or blanket permission
+grant was added. 182 backend tests pass; see ADR-0013 for the Docker trust boundary and limitations.
+
+Ordinary non-hidden sandbox writes now follow workspace path rules without per-file confirmation;
+saved agents can still require confirmation explicitly. Host commands/install/MCP retain approval.
+Generated HTML now reaches persisted artifact downloads and the existing frontend preview, with
+direct local CSS/JS/images bundled (2 MB/HTML, 20 entries/run). Interactive scripts run only in the
+downloaded file, not the sanitized preview. Real-model browser generation, download interaction,
+reload and desktop/mobile checks passed, along with 175 backend tests. See ADR-0012 for limits.
+
 MongoDB now starts successfully with `docker compose up -d --wait mongo`. If the configured
 Docker Hub mirrors fail, use the official-image mirror and tag the images locally:
 
@@ -53,9 +65,15 @@ T12 GridFS snapshot storage/restoration is implemented and tested against real M
 Restore requires an empty destination and rejects unsafe archive entries before writing.
 The caller must stop writes and hold exclusive workspace ownership during snapshot/restore.
 
-These modules are not yet wired into the production run factory; the API still rejects
-sandbox policies. File upload/download endpoints, automatic snapshots and browser management
-remain pending. The historical Tier 1 notes below describe the earlier checkpoint.
+The production run factory now accepts Python sandbox policies and routes file and command
+tools through Docker. Legacy chat requests can opt in with `sandbox: true`; session execution
+mode cannot change after its first run. The pool starts maintenance during application startup
+and releases leases after runs. The chat UI exposes sandbox selection and approval cards,
+with session-scoped display and locally persisted environment selection.
+Real Docker API tests cover approval-before-write, allow/deny outcomes, trace results and
+absence of host-tool fallback. Generic file uploads, automatic snapshots, Node
+image integration and browser sandbox management remain pending. The historical Tier 1
+notes below describe the earlier checkpoint.
 
 Run all available checks with `cd harness && uv run pytest tests/unit tests/e2e -q`.
 Docker/MongoDB tests skip explicitly when their external prerequisites are absent.
@@ -71,6 +89,10 @@ Docker/MongoDB tests skip explicitly when their external prerequisites are absen
 - This is a Tier 1 implementation checkpoint, not full T0-T20 acceptance.
 
 ## Run the runtime
+
+Skills and MCP runtime integration is now available in the chat capabilities panel.
+See [CAPABILITIES.md](CAPABILITIES.md) for supported import/transport limits, real execution
+instructions and verification. Both workflows passed a browser check with the real model.
 
 After MongoDB is available, configure `.env` locally using `.env.example` (never commit credentials):
 
@@ -126,6 +148,10 @@ Snapshots go to ignored `out/browser/` and check desktop and mobile overflow.
 ## Scope and boundaries
 
 - Tier 1 is for trusted, single-user, loopback development; it has no authentication.
+- Authentication and private Skills/MCP are planned, not implemented: development plan section
+  2.1 and task book T15.A1-A4 define the next platform security milestone (M2A). Multi-user
+  exposure requires owner checks across APIs/tools/SSE/approvals/files, tenant sandbox boundaries,
+  encrypted MCP secrets, explicit legacy-data migration and two-user acceptance, not just login UI.
 - Tools use a dedicated per-session workspace, block credential paths and shell syntax,
   and pass only PATH/LANG/HOME to command processes. They are not a Docker security boundary.
 - L3 requests suspend execution and must be resolved at `POST /api/approvals/{call_id}`;

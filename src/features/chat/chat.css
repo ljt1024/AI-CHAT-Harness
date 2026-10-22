@@ -98,7 +98,10 @@
 
 .messages-scollWrap {
   overflow-y: auto;
-  scroll-behavior: smooth;
+  /* No smooth scrolling here: streamed updates pin scrollTop every frame and a
+     smooth behaviour would restart the animation endlessly, which reads as jitter. */
+  scroll-behavior: auto;
+  overflow-anchor: none;
   flex: 1;
   min-height: 0;
 }

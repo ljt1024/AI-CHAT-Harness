@@ -32,7 +32,8 @@ class AgentDefinition(BaseModel):
     system_prompt: str = "Complete the task. Use tools only when needed."
     model: ModelRef = Field(default_factory=ModelRef)
     tools: list[str] = Field(default_factory=list)
-    skills: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list, max_length=8)
+    mcp_servers: list[str] = Field(default_factory=list, max_length=8)
     sandbox_policy: SandboxPolicy | None = None
     permissions: dict[str, Literal["auto", "rule", "confirm"]] = Field(default_factory=dict)
     stop_conditions: StopConditions = Field(default_factory=StopConditions)

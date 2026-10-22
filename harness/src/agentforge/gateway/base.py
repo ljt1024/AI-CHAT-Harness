@@ -5,6 +5,13 @@ from pydantic import BaseModel, Field
 from agentforge.models import ModelRef, ToolCall
 
 
+class ModelOutputError(ValueError):
+    def __init__(self, code: str, finish_reason: str | None = None):
+        self.code, self.finish_reason = code, finish_reason
+        super().__init__("Model output was truncated." if code == "output_limit"
+                         else "Model returned invalid tool arguments.")
+
+
 class Pricing(BaseModel):
     input_per_million: float = 0.28
     output_per_million: float = 0.42

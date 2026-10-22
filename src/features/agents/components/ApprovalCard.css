@@ -1,0 +1,41 @@
+.approval-card { min-width: 0; margin: 12px 0; padding: 14px 16px; border: 1px solid var(--border-strong, #b6a558); border-radius: 8px; background: var(--surface-elevated, #fff); color: var(--text-color, #20252b); }
+.chat-composer { flex-shrink: 0; min-width: 0; }
+/* Pending approval sits directly above the composer, which stays visible below it. */
+.approval-inline { display: flex; justify-content: center; padding: 8px 20px 0; }
+.approval-inline .approval-card { width: 100%; max-width: 1020px; margin: 0; max-height: 42dvh; overflow: auto; }
+.approval-card:focus-visible { outline: 2px solid var(--secondary-color); outline-offset: 2px; }
+.approval-heading { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 14px; }
+.approval-count { color: var(--text-muted-color); font-size: 12px; }
+.approval-stop { margin-left: auto; padding: 4px 0; border: 0; background: transparent; color: var(--text-muted-color); font-size: 12px; cursor: pointer; }
+.approval-stop:hover { color: var(--text-color); }
+/* Resolved approvals stay in the turn as a collapsed audit line. */
+.approval-record { margin: 8px 0 2px; font-size: 13px; }
+.approval-record > summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; cursor: pointer; color: var(--text-muted-color); }
+.approval-record-title { color: var(--text-color); }
+.approval-record-count { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; }
+.approval-record-count em { font-style: normal; }
+.approval-record-count .approved { color: #246448; }
+.approval-record-count .denied { color: #a12a2a; }
+.approval-record-list { list-style: none; margin: 6px 0 0; padding: 0 0 0 2px; display: grid; gap: 2px; }
+.approval-record-list summary { display: flex; align-items: baseline; gap: 8px; cursor: pointer; }
+.approval-record-list code { display: inline; margin: 0; font-size: 12px; }
+.approval-record-list pre { max-height: 160px; }
+.approval-mark { width: 12px; text-align: center; font-weight: 700; }
+.approval-mark.approved { color: #246448; }
+.approval-mark.denied { color: #a12a2a; }
+.approval-record-status { color: var(--text-muted-color); font-size: 12px; }
+.approval-card summary { cursor: pointer; margin-top: 6px; }
+.approval-card summary code { display: inline; }
+.approval-card p { margin: 6px 0 0; }
+.approval-card code { display: block; margin-top: 6px; overflow-wrap: anywhere; }
+.approval-card pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: min(22dvh, 180px); overflow: auto; font-size: 12px; line-height: 1.5; margin: 10px 0 12px; }
+.approval-actions { display: flex; gap: 8px; }
+.approval-actions button { padding: 8px 16px; border: 1px solid #82918a; border-radius: 4px; background: var(--surface-color, #fff); color: var(--text-color, #20252b); cursor: pointer; }
+.approval-actions button:last-child { background: #246448; color: white; }
+.approval-actions button:disabled { opacity: .6; cursor: wait; }
+.sandbox-control { display: flex; align-items: center; gap: 8px; padding: 8px 20px; font-size: 13px; }
+@media (max-width: 768px) {
+  .approval-inline { padding: 6px 12px 0; }
+  .approval-inline .approval-card { padding: 12px; }
+  .approval-actions button { flex: 1; min-height: 40px; }
+}

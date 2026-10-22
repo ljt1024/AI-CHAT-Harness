@@ -2,24 +2,35 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 import logging
+from urllib.parse import quote
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field, StrictBool
 
 from agentforge.config import Settings
+from agentforge.artifacts import ArtifactEventBus
+from agentforge.capabilities import MCPServerRequest, server_tools
 from agentforge.context import ContextManager
-from agentforge.events import EventBus
 from agentforge.gateway.deepseek import DeepSeekAdapter
+from agentforge.gateway.base import ModelOutputError
 from agentforge.gateway.registry import ModelGateway
 from agentforge.loop import Runtime
 from agentforge.middleware import MiddlewareStack
 from agentforge.models import AgentDefinition, ModelRef, new_id
 from agentforge.permissions import ApprovalManager
+from agentforge.prompts import with_response_language
 from agentforge.store import MongoDBStore
 from agentforge.tools.base import ToolRegistry
 from agentforge.tools.fs import FileTool, Workspace
 from agentforge.tools.shell import ShellTool
+from agentforge.sandbox.docker_runner import DockerRunner
+from agentforge.sandbox.pool import SandboxPool
+from agentforge.sandbox.tools import SandboxTool
+from agentforge.models import SandboxPolicy
+from agentforge.skills import (SKILL_TOOL_NAMES, SkillManager, SkillPackage, SkillTool,
+    remove_synced_skill)
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +43,9 @@ class LegacyRequest(BaseModel):
     agentIds: list[str] = Field(default_factory=list, max_length=1)
     model: str = "deepseek-chat"
     fileIds: list[str] = Field(default_factory=list)
+    sandbox: bool = False
+    skills: list[str] = Field(default_factory=list, max_length=8)
+    mcp_servers: list[str] = Field(default_factory=list, max_length=8)
 
 
 class SessionRequest(BaseModel):
@@ -58,7 +72,8 @@ class CompletionRequest(BaseModel):
 def legacy_result(result, task):
     return {"id": result["trace_id"], "sessionId": result["session_id"], "input": task,
             "output": result["output"], "steps": [], "memoryMessages": 0,
-            "cost": result["cost"], "stop_reason": result["stop_reason"]}
+            "cost": result["cost"], "stop_reason": result["stop_reason"],
+            "artifacts": result.get("artifacts", [])}
 
 
 def legacy_event(event, task):
@@ -70,12 +85,15 @@ def legacy_event(event, task):
     elif event["type"] == "tool_call":
         call = event["call"]
         event.update(type="step", step={"id": call["id"], "toolCallId": call["id"], "phase": "action",
-            "status": "running", "output": f"{call['name']} {json.dumps(call['arguments'])}"})
+            "status": "running", "agentId": call["name"], "output": f"{call['name']} {json.dumps(call['arguments'])}"})
     elif event["type"] == "tool_result":
         result = event["result"]
         event.update(type="step", step={"id": event["call_id"], "toolCallId": event["call_id"],
             "phase": "observation", "status": "completed" if result["ok"] else "failed",
             "output": result["output"] or result["error"] or ""})
+    elif event["type"] == "model_recovery":
+        event.update(type="step", step={"id": event["step_id"], "phase": "thought",
+            "status": "completed", "output": event["message"]})
     elif event["type"] == "done":
         event["result"] = legacy_result(event["result"], task)
     return event
@@ -108,17 +126,33 @@ def create_app(settings=None, store=None, gateway=None):
     gateway = gateway or ModelGateway()
     if "deepseek" not in gateway.adapters:
         gateway.register("deepseek", DeepSeekAdapter(settings.deepseek_api_key.get_secret_value()))
+    pool = SandboxPool(DockerRunner(settings.agentforge_workspace / "sandboxes"),
+        warm_size=settings.sandbox_warm_size, max_size=settings.sandbox_max_size,
+        idle_seconds=settings.sandbox_idle_seconds)
+    isolated_tools = {}
+    run_sandboxes = {}
+    skill_manager = SkillManager(store)
 
     def tools_factory(session_id):
+        if session_id in isolated_tools:
+            return isolated_tools[session_id]
         workspace = Workspace(settings.agentforge_workspace / session_id)
         registry = ToolRegistry()
         for name in ("read_file", "write_file", "grep", "glob"):
             registry.register(FileTool(workspace, name))
         registry.register(ShellTool(workspace))
+        for name in SKILL_TOOL_NAMES:
+            registry.register(SkillTool(skill_manager, name))
         return registry
 
     runtime = Runtime(gateway, store, tools_factory)
     runtime.middleware, runtime.context_manager = MiddlewareStack(), ContextManager()
+    async def sync_skills(ctx):
+        if ctx.agent.skills:
+            sandbox = run_sandboxes[ctx.metadata["session_id"]]
+            ctx.metadata["skills"] = await skill_manager.sync(ctx.agent.skills, sandbox)
+    skills_layer = next(layer for layer in runtime.middleware.layers if layer.name == "SkillsSync")
+    skills_layer.sync, skills_layer.enabled = sync_skills, True
     approvals = ApprovalManager(store, settings.approval_timeout)
     runtime.permission_check = approvals.check
     runs = {}
@@ -129,6 +163,7 @@ def create_app(settings=None, store=None, gateway=None):
         app.state.ready = False
         try:
             await store.setup()
+            await pool.start()
             if await store.get("agents", "default") is None:
                 await store.put("agents", default.model_dump())
             app.state.ready = True
@@ -138,9 +173,11 @@ def create_app(settings=None, store=None, gateway=None):
         for _, task in runs.values():
             task.cancel()
         await asyncio.gather(*(task for _, task in runs.values()), return_exceptions=True)
+        await pool.close()
 
     app = FastAPI(title="AgentForge", lifespan=lifespan)
     app.state.runtime, app.state.approvals = runtime, approvals
+    app.state.sandbox_pool = pool
 
     def ready(model=False):
         if not app.state.ready:
@@ -166,36 +203,216 @@ def create_app(settings=None, store=None, gateway=None):
         return {"code": 200, "data": [{**a, "modelId": a["model"]["model_id"],
             "systemPrompt": a["system_prompt"]} for a in await store.list("agents")]}
 
+    @app.get("/api/files/{file_id}/download")
+    async def download_artifact(file_id: str):
+        ready()
+        record = await store.get("artifacts", file_id)
+        if record is None:
+            raise HTTPException(404, "File not found.")
+        artifact = record["artifact"]
+        return Response(bytes(record["content"]), media_type="text/html", headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(artifact['fileName'], safe='')}",
+            "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
+            "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+        })
+
+    @app.get("/api/skills")
+    async def list_skills():
+        ready()
+        return {"code": 200, "data": [{k: v for k, v in p.items() if k != "files"}
+            | {"files": list(p["files"])} for p in await store.list("skills")]}
+
+    @app.post("/api/skills", status_code=201)
+    async def install_skill(package: SkillPackage):
+        ready()
+        installed = await skill_manager.install(package)
+        return {"code": 201, "data": {k: v for k, v in installed.items() if k != "files"}
+            | {"files": list(installed["files"])}}
+
+    @app.delete("/api/skills/{identity}")
+    async def uninstall_skill(identity: str):
+        ready()
+        try:
+            package = await skill_manager.delete(identity)
+        except ValueError as exc:
+            raise HTTPException(404 if "not installed" in str(exc) else 409, str(exc)) from None
+        removed = 0
+        for directory in settings.agentforge_workspace.glob("**/.skills"):
+            try:
+                removed += remove_synced_skill(directory.parent, identity)
+            except (OSError, ValueError):
+                logger.warning("Could not clean synced skill %s in %s", identity, directory)
+        return {"code": 200, "data": {"id": identity, "name": package["name"],
+            "removed_workspaces": removed}}
+
+    @app.get("/api/mcp/servers")
+    async def list_mcp_servers():
+        ready()
+        return {"code": 200, "data": await store.list("mcp_servers")}
+
+    @app.post("/api/mcp/servers", status_code=201)
+    async def register_mcp_server(request: MCPServerRequest):
+        ready()
+        if await store.get("mcp_servers", request.id):
+            raise HTTPException(409, "MCP server ID already exists.")
+        try:
+            tools = await server_tools(request.model_dump())
+        except Exception:
+            raise HTTPException(502, "MCP discovery failed. Check the server URL and Streamable HTTP transport.") from None
+        server = await store.put("mcp_servers", {**request.model_dump(), "tools": [
+            {"name": tool.name, "description": tool.description, "schema": tool.schema} for tool in tools]})
+        return {"code": 201, "data": server}
+
+    @app.delete("/api/mcp/servers/{identity}")
+    async def remove_mcp_server(identity: str):
+        ready()
+        if await store.list("agents", {"mcp_servers": identity}):
+            raise HTTPException(409, "MCP server is referenced by a saved agent.")
+        await store.db.mcp_servers.delete_one({"id": identity})
+        return {"code": 200}
+
+    async def prepare_agent(agent):
+        agent = agent.model_copy(deep=True)
+        agent.tools = list(dict.fromkeys([*agent.tools, *SKILL_TOOL_NAMES]))
+        agent.system_prompt += "\n\nYou have a skill system. Use list_skills to discover installed " \
+            "skills when the task may benefit from one; do not claim skills are unavailable without " \
+            "checking. Call load_skill with the chosen catalog ID before using its scripts. Follow " \
+            "the returned SKILL.md instructions and actual directory. Loading does not execute scripts; " \
+            "use run_command inside the Docker sandbox; these commands run automatically unless " \
+            "the agent explicitly requires approval. You can also install skills: use install_skill " \
+            "with an explicit public GitHub source, a current sandbox folder, or inline files supplied " \
+            "or explicitly requested by the user. Ask for the source when it is unspecified; never " \
+            "invent a repository or replace a requested download with invented skill content. " \
+            "Installation requires approval, imports files only, and returns the real installed ID. " \
+            "GitHub downloads are performed by the backend install_skill tool, outside the sandbox; " \
+            "an offline sandbox or restricted shell does not prevent GitHub skill installation. " \
+            "Use list_skills to verify, then load_skill if the user wants to use it. To remove an " \
+            "installed skill the user no longer wants, call delete_skill with its exact catalog ID; " \
+            "it requires approval, clears the skill's synced sandbox files, and is refused while a " \
+            "saved agent still selects the skill. " \
+            "Do not run pip, " \
+            "npm, git clone or curl to install skills; the offline sandbox cannot download packages. " \
+            "Never invent tools, installation success, or script results."
+        agent.system_prompt += "\n\nCreate requested deliverables using write_file, not just code in chat. " \
+            "Use relative workspace paths. Ordinary non-hidden workspace file writes do not need " \
+            "approval unless the agent policy explicitly requires it. Commands and installed skill " \
+            "scripts inside the offline Docker sandbox also run automatically by default. Host shell " \
+            "commands, skill installation and MCP calls still require approval. Do not ask the user " \
+            "for routine sandbox confirmations; invoke tools and let the permission system decide. " \
+            "For web deliverables, write an .html entry file and " \
+            "its local CSS/JS files. The system delivers a downloadable HTML with local stylesheet and " \
+            "script files inlined when the run ends. Prefer self-contained CSS (no imports or relative " \
+            "asset URLs) and classic JS (no module imports/fetch). The in-app preview is script-free; " \
+            "download and open the HTML to use scripts. Do not run shell commands merely to write " \
+            "files or repeatedly read back files you just wrote. Never claim browser verification " \
+            "unless a browser tool was actually used."
+        if agent.skills and agent.sandbox_policy is None:
+            raise HTTPException(422, "Skills require the Docker sandbox. Start a sandbox conversation.")
+        if agent.sandbox_policy and agent.sandbox_policy.image != "python:3.12-slim":
+            raise HTTPException(422, "Integrated file tools require the Python sandbox image.")
+        try:
+            instructions = await skill_manager.instructions(agent.skills)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if instructions:
+            agent.system_prompt += "\n\nEnabled skills (scripts run only via sandbox commands; " \
+                "dependencies are not installed automatically):\n" + instructions
+        remote = []
+        for identity in dict.fromkeys(agent.mcp_servers):
+            server = await store.get("mcp_servers", identity)
+            if server is None:
+                raise HTTPException(422, f"MCP server is not registered: {identity}")
+            try:
+                remote.extend(await server_tools(server))
+            except Exception:
+                raise HTTPException(502, f"MCP server unavailable: {identity}") from None
+        agent.tools = list(dict.fromkeys([*agent.tools, *(tool.name for tool in remote)]))
+        if len(agent.tools) > 128:
+            raise HTTPException(422, "Enable fewer MCP servers; at most 128 tools per run are supported.")
+        return agent, remote
+
     @app.post("/api/agents", status_code=201)
     async def create_agent(agent: AgentDefinition):
         ready()
-        if agent.sandbox_policy is not None or agent.skills:
-            raise HTTPException(422, "Sandbox and skills require Tier 2.")
+        prepared, remote = await prepare_agent(agent)
         if agent.model.provider not in gateway.adapters:
             raise HTTPException(422, "Model provider is not registered.")
         try:
-            tools_factory("validation").schemas(agent.tools)
+            validation = tools_factory("validation")
+            for tool in remote:
+                validation.register(tool)
+            validation.schemas(prepared.tools)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         if await store.get("agents", agent.id):
             raise HTTPException(409, "Agent ID already exists.")
         return {"code": 201, "data": await store.put("agents", agent.model_dump())}
 
-    async def execute(agent, task, session_id, bus, turn_id):
+    async def execute(agent, task, session_id, bus, turn_id, remote):
         try:
             async with asyncio.timeout(900):
+                previous = await store.get("sessions", session_id)
+                isolated = agent.sandbox_policy is not None
+                if previous and previous.get("isolated", False) != isolated:
+                    raise ValueError("Start a new conversation to change execution environment.")
+                if isolated:
+                    for identity in (previous or {}).get("loaded_skills", []):
+                        if identity not in agent.skills and len(agent.skills) < 8 and await store.get("skills", identity):
+                            agent.skills.append(identity)
+                registry = tools_factory(session_id)
+                async def skill_loaded(package):
+                    await bus.emit({"type": "skill_loaded", "sessionId": session_id, "turnId": turn_id,
+                        "skill_id": package["id"], "name": package["name"]})
+                async def skill_installed(package):
+                    await bus.emit({"type": "skill_installed", "sessionId": session_id, "turnId": turn_id,
+                        "skill_id": package["id"], "name": package["name"], "sha256": package["sha256"]})
+                async def skill_deleted(package):
+                    await bus.emit({"type": "skill_deleted", "sessionId": session_id, "turnId": turn_id,
+                        "skill_id": package["id"], "name": package["name"]})
+                if isolated:
+                    lease = await pool.acquire(session_id, agent.sandbox_policy.image)
+                    run_sandboxes[session_id] = lease.sandbox
+                    registry = ToolRegistry()
+                    for name in agent.tools:
+                        if name not in {tool.name for tool in remote} | set(SKILL_TOOL_NAMES):
+                            registry.register(SandboxTool(pool.runner, lease.sandbox, name, agent.sandbox_policy.timeout))
+                for name in SKILL_TOOL_NAMES:
+                    registry.tools.pop(name, None)
+                    registry.register(SkillTool(skill_manager, name, pool.runner,
+                        run_sandboxes.get(session_id), agent, skill_loaded, skill_installed,
+                        skill_deleted))
+                for tool in remote:
+                    registry.register(tool)
+                isolated_tools[session_id] = registry
+                await store.put("sessions", {**(previous or {}), "id": session_id,
+                    "sessionId": session_id, "isolated": isolated})
                 await runtime.run(agent, task, session_id, bus, turn_id=turn_id)
         except Exception:
             logger.warning("Run failed for session %s", session_id)
             if not bus.events or bus.events[-1]["type"] != "error":
                 await bus.emit({"type": "error", "sessionId": session_id,
                                 "message": "Run failed. Check configuration and retry."})
+        finally:
+            try:
+                if session_id in isolated_tools:
+                    current = await store.get("sessions", session_id)
+                    if current:
+                        await store.put("sessions", {**current, "loaded_skills": agent.skills})
+            except Exception:
+                logger.warning("Could not persist loaded skills for session %s", session_id)
+            finally:
+                isolated_tools.pop(session_id, None)
+                run_sandboxes.pop(session_id, None)
+                await pool.release(session_id)
 
-    def start(agent, task, session_id, turn_id):
+    def start(agent, task, session_id, turn_id, remote=()):
         if session_id in runs and not runs[session_id][1].done():
             raise HTTPException(409, "Session already has an active run.")
-        bus = EventBus(runtime)
-        running = asyncio.create_task(execute(agent, task, session_id, bus, turn_id))
+        def workspace():
+            sandbox = run_sandboxes.get(session_id)
+            return sandbox.workspace if sandbox else Workspace(settings.agentforge_workspace / session_id)
+        bus = ArtifactEventBus(runtime, store, workspace)
+        running = asyncio.create_task(execute(agent, task, session_id, bus, turn_id, remote))
         runs[session_id] = (bus, running)
         return bus, running
 
@@ -212,7 +429,10 @@ def create_app(settings=None, store=None, gateway=None):
         agent = AgentDefinition.model_validate(definition)
         if not request.agentIds:
             agent.model = ModelRef(model_id=request.model)
-        bus, running = start(agent, request.input, request.sessionId, request.turnId)
+            agent.sandbox_policy = SandboxPolicy() if request.sandbox else None
+            agent.skills, agent.mcp_servers = request.skills, request.mcp_servers
+        agent, remote = await prepare_agent(agent)
+        bus, running = start(agent, request.input, request.sessionId, request.turnId, remote)
         if not request.stream:
             await running
             final = bus.events[-1]
@@ -224,9 +444,10 @@ def create_app(settings=None, store=None, gateway=None):
                 async for frame in event_frames(bus, request.input, legacy=True):
                     yield frame
             finally:
-                if not running.done():
+                terminal = any(event["type"] in {"done", "error"} for event in bus.events)
+                if not running.done() and not terminal:
                     running.cancel()
-                    await asyncio.gather(running, return_exceptions=True)
+                await asyncio.gather(running, return_exceptions=True)
         return StreamingResponse(frames(), media_type="text/event-stream", headers={
             "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
 
@@ -237,7 +458,8 @@ def create_app(settings=None, store=None, gateway=None):
         if not definition:
             raise HTTPException(404, "Agent not found.")
         session_id, turn_id = new_id(), new_id()
-        bus, _ = start(AgentDefinition.model_validate(definition), request.task, session_id, turn_id)
+        agent, remote = await prepare_agent(AgentDefinition.model_validate(definition))
+        bus, _ = start(agent, request.task, session_id, turn_id, remote)
         async with bus.condition:
             await bus.condition.wait_for(lambda: bool(bus.events))
         return {"session_id": session_id, "turn_id": turn_id, "trace_id": bus.events[0].get("trace_id")}
@@ -276,15 +498,36 @@ def create_app(settings=None, store=None, gateway=None):
         if not request.stream:
             raise HTTPException(422, "Use stream=true.")
         async def frames():
-            async for chunk in gateway.chat([m.model_dump() for m in request.messages], [], ModelRef(model_id=request.model)):
-                if chunk.type == "content":
-                    payload = {"choices": [{"delta": {"content": chunk.text}}]}
-                elif chunk.type == "usage":
-                    payload = {"choices": [], "usage": {"prompt_tokens": chunk.tokens_in,
-                        "completion_tokens": chunk.tokens_out, "total_tokens": chunk.tokens_in + chunk.tokens_out}}
-                else:
-                    continue
-                yield f"data: {json.dumps(payload)}\n\n"
+            try:
+                user_request = next((m.content for m in reversed(request.messages) if m.role == "user"), "")
+                messages = with_response_language([m.model_dump() for m in request.messages], user_request)
+                async for chunk in gateway.chat(messages, [], ModelRef(model_id=request.model)):
+                    if chunk.type == "content":
+                        payload = {"choices": [{"delta": {"content": chunk.text}}]}
+                    elif chunk.type == "usage":
+                        payload = {"choices": [], "usage": {"prompt_tokens": chunk.tokens_in,
+                            "completion_tokens": chunk.tokens_out, "total_tokens": chunk.tokens_in + chunk.tokens_out}}
+                    else:
+                        continue
+                    yield f"data: {json.dumps(payload)}\n\n"
+            except ModelOutputError as exc:
+                chinese = any("\u3400" <= c <= "\u9fff" for c in user_request)
+                message = ("模型输出达到长度限制，回答尚未完成。请缩小任务范围或要求分段输出。" if chinese
+                           else "Model output reached its length limit. Request a smaller response or split the task.")
+                yield f"data: {json.dumps({'error': {'message': message, 'code': exc.code}})}\n\n"
+                return
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                message = {
+                    401: "Model provider rejected the API key. Check DEEPSEEK_API_KEY and restart.",
+                    402: "Model provider balance is insufficient. Check your provider account.",
+                    429: "Model provider rate limit reached. Please retry later.",
+                }.get(status, f"Model provider request failed (HTTP {status}). Please retry later.")
+                yield f"data: {json.dumps({'error': {'message': message}})}\n\n"
+                return
+            except httpx.TransportError:
+                yield f"data: {json.dumps({'error': {'message': 'Model connection interrupted. Please retry.'}})}\n\n"
+                return
             yield "data: [DONE]\n\n"
         return StreamingResponse(frames(), media_type="text/event-stream")
 

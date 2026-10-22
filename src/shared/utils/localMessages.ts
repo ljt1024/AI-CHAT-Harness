@@ -12,8 +12,16 @@ export interface MessageAttachment {
     size?: number;
 }
 
+export interface MessageApproval {
+    id: string;
+    tool: string;
+    args: Record<string, unknown>;
+    status: 'pending' | 'approved' | 'denied' | 'closed';
+}
+
 export interface Message {
     artifacts?: AgentArtifact[];
+    approvals?: MessageApproval[];
     agentTurnId?: string;
     summarizedMessages?: number;
     agentSteps?: AgentStep[];

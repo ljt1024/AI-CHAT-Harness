@@ -4,7 +4,7 @@ from collections.abc import AsyncIterator
 import httpx
 
 from agentforge.gateway.base import (
-    ChatRequest, Chunk, ContentDelta, Done, Pricing, ToolCallRequest, UsageReport,
+    ChatRequest, Chunk, ContentDelta, Done, ModelOutputError, Pricing, ToolCallRequest, UsageReport,
 )
 from agentforge.models import ToolCall
 
@@ -23,13 +23,14 @@ class DeepSeekAdapter:
                   if k in {"temperature", "top_p", "max_tokens", "seed"}}
         body = {**params, "model": req.model_ref.model_id, "messages": req.messages,
                 "stream": True, "stream_options": {"include_usage": True}}
-        body.setdefault("max_tokens", 4096)
+        body.setdefault("max_tokens", 8192)
         if req.tools:
             body["tools"] = req.tools
         own_client = self.client is None
         client = self.client or httpx.AsyncClient(timeout=60)
         calls: dict[int, dict] = {}
         completed = False
+        finish_reason = None
         try:
             async with client.stream("POST", "https://api.deepseek.com/chat/completions",
                                      json=body, headers={"Authorization": f"Bearer {self.api_key}"}) as r:
@@ -49,6 +50,8 @@ class DeepSeekAdapter:
                                           usd=(count_in * self.pricing.input_per_million +
                                                count_out * self.pricing.output_per_million) / 1e6)
                     for choice in payload.get("choices", []):
+                        if choice.get("finish_reason"):
+                            finish_reason = choice["finish_reason"]
                         delta = choice.get("delta", {})
                         if delta.get("content"):
                             yield ContentDelta(text=delta["content"])
@@ -61,9 +64,20 @@ class DeepSeekAdapter:
                             call["args"] += function.get("arguments", "")
                 if not completed:
                     raise httpx.ReadError("Model stream ended without its completion marker.")
+                if finish_reason == "length":
+                    raise ModelOutputError("output_limit", finish_reason)
+                parsed = []
                 for item in calls.values():
-                    yield ToolCallRequest(call=ToolCall(id=item["id"], name=item["name"],
-                                                       arguments=json.loads(item["args"] or "{}")))
+                    try:
+                        arguments = json.loads(item["args"] or "{}")
+                    except json.JSONDecodeError:
+                        raise ModelOutputError("invalid_tool_arguments", finish_reason) from None
+                    if not isinstance(arguments, dict) or not item["name"] or not item["id"]:
+                        raise ModelOutputError("invalid_tool_arguments", finish_reason)
+                    parsed.append(ToolCallRequest(call=ToolCall(id=item["id"], name=item["name"],
+                                                                arguments=arguments)))
+                for call in parsed:
+                    yield call
                 yield Done()
         finally:
             if own_client:

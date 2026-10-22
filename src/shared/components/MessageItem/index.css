@@ -210,3 +210,22 @@
 .reasoning-panel > summary small { margin-left: 12px; font-variant-numeric: tabular-nums; }
 .reasoning-panel > summary:focus-visible { outline: 2px solid var(--secondary-color); outline-offset: 2px; }
 .reasoning-panel-content { padding: 0 14px 10px; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.reasoning-summary-label { display: inline-flex; align-items: center; gap: 7px; }
+
+.agent-spinner {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1.6px solid color-mix(in srgb, var(--text-muted-color) 28%, transparent);
+  border-top-color: var(--secondary-color);
+  animation: agentSpin .8s linear infinite;
+}
+
+@keyframes agentSpin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-spinner { animation: none; }
+}

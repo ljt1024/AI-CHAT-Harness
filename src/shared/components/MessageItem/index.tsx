@@ -1,7 +1,8 @@
 import { AgentTrace } from '@/features/agents/components/AgentTrace';
 import { AgentArtifacts } from '@/features/agents/components/AgentArtifacts';
-import { useState, useEffect, useRef } from 'react';
-import MarkdownContent from '../MarkDownContent';
+import { ApprovalHistory } from '@/features/agents/components/ApprovalHistory';
+import React, { useState, useEffect, useRef } from 'react';
+import StreamingMarkdown from '../MarkDownContent/StreamingMarkdown';
 import Tooltip from '../Tooltip';
 import Icon from '../Icon';
 import CopyIcon from "@/shared/assets/icons/copy.svg?react";
@@ -115,11 +116,12 @@ const MessageItem: React.FC<MessageItemProps> = ({
           <div className={msg.isBot ? 'content' : 'content userContent'}>
             {
               msg.isBot ? <>
-                {msg.agentStatus && <AgentTrace steps={msg.agentSteps || []} status={msg.agentStatus} memoryMessages={msg.memoryMessages} summarizedMessages={msg.summarizedMessages} />}
+                {msg.agentStatus && <AgentTrace steps={msg.agentSteps || []} status={msg.agentStatus} live={Boolean(msg.isLoading)} answering={Boolean(msg.isLoading && msg.content)} memoryMessages={msg.memoryMessages} summarizedMessages={msg.summarizedMessages} />}
+                {msg.approvals && msg.approvals.length > 0 && <ApprovalHistory approvals={msg.approvals} />}
                 {
                   (msg.reasoning_content || (msg.isLoading && msg.reasoningPending)) && <ReasoningPanel content={msg.reasoning_content || ''} loading={Boolean(msg.isLoading && (msg.reasoningPending ?? !msg.content))} durationMs={msg.reasoningDurationMs} interrupted={msg.reasoningInterrupted} />
                 }
-                <MarkdownContent msg={msg.content || ''} />
+                <StreamingMarkdown content={msg.content || ''} streaming={Boolean(msg.isLoading)} />
                 <AgentArtifacts artifacts={msg.artifacts || []} onPreview={onPreviewArtifact} />
               </>
                 : <>
@@ -217,4 +219,4 @@ const MessageItem: React.FC<MessageItemProps> = ({
   )
 }
 
-export default MessageItem
+export default React.memo(MessageItem)

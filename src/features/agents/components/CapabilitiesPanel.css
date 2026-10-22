@@ -1,0 +1,19 @@
+.capabilities-panel { padding: 0 20px 8px; font-size: 13px; border-bottom: 1px solid var(--border-color, #dce2e8); }
+.capabilities-panel summary { cursor: pointer; padding: 8px 0; }
+.capabilities-content { max-height: 40vh; overflow-y: auto; }
+.capabilities-panel fieldset { border: 0; border-top: 1px solid var(--border-color, #dce2e8); margin: 8px 0; padding: 8px 0; min-width: 0; }
+.capabilities-panel legend { font-weight: 600; padding-right: 12px; }
+.cap-row { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; }
+.cap-item { display: flex; align-items: flex-start; gap: 8px; }
+.cap-item .cap-row { flex: 1; min-width: 0; }
+.cap-item button, .cap-refresh { padding: 6px 8px; margin-top: 4px; border: 1px solid #9aa8b6; border-radius: 4px; background: var(--bg-primary, white); color: inherit; cursor: pointer; flex-shrink: 0; }
+.cap-row span { min-width: 0; overflow-wrap: anywhere; }
+.cap-row small { display: block; margin-top: 4px; opacity: .7; }
+.cap-connect { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.cap-connect label { display: grid; gap: 4px; flex: 1 1 160px; min-width: 0; }
+.cap-connect input { width: 100%; box-sizing: border-box; }
+.cap-connect input, .cap-connect button { padding: 8px; border: 1px solid #9aa8b6; border-radius: 4px; background: var(--bg-primary, white); color: inherit; }
+.cap-connect button { cursor: pointer; }
+.cap-install { display: grid; gap: 6px; }
+.cap-install input { max-width: 100%; }
+.capabilities-panel [role=alert] { color: #bf3333; overflow-wrap: anywhere; }

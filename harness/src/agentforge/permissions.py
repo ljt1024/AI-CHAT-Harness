@@ -1,6 +1,7 @@
 import asyncio
 
 from agentforge.models import new_id
+from agentforge.sandbox.tools import SandboxTool
 
 
 class ApprovalManager:
@@ -14,9 +15,15 @@ class ApprovalManager:
         level = max(levels[tool.permission], levels[agent.permissions.get(tool.name, "auto")])
         if level == 1:
             return True
+        if level == 2 and tool.name == "run_command" and isinstance(tool, SandboxTool):
+            # Trust the real Docker isolation boundary, not command-text heuristics.
+            # Host shell, installers and remote MCP tools never enter this rule.
+            return tool.sandbox.alive
         if level == 2 and tool.name == "write_file" and tool.source == "builtin":
             try:
-                tool.workspace.path(call.arguments["path"])
+                path = tool.workspace.path(call.arguments["path"])
+                if any(part.startswith(".") for part in path.relative_to(tool.workspace.root).parts):
+                    return False
                 return True
             except (ValueError, KeyError):
                 return False

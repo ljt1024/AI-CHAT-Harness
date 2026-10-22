@@ -1,4 +1,5 @@
 export interface SSEData {
+  error?: { message?: string };
   choices: Array<{
     delta: {
       content: string | null;
