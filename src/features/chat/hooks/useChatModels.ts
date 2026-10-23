@@ -22,6 +22,8 @@ export const useChatModels = ({
   useEffect(() => { const refresh = () => setRevision(value => value + 1); window.addEventListener('models-changed', refresh); return () => window.removeEventListener('models-changed', refresh); }, []);
   const [models, setModels] = useState<ModelOption[]>([])
   const [isModelsLoading, setIsModelsLoading] = useState(false)
+  /** True when the runtime could not be reached, so the UI can say so out loud. */
+  const [isBackendUnavailable, setIsBackendUnavailable] = useState(false)
   const [thinkingPreference, setThinkingPreference] = useState(true)
   const [selectedModelId, setSelectedModelId] = useState<string>(
     localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_MODEL_ID
@@ -45,6 +47,7 @@ export const useChatModels = ({
         if (controller.signal.aborted) return;
         const modelList = Array.isArray(result.data) ? result.data : []
         setModels(modelList)
+        setIsBackendUnavailable(false)
 
         if (modelList.length > 0) {
           const enabledList = modelList.filter((model) => model.enabled)
@@ -61,10 +64,14 @@ export const useChatModels = ({
       } catch (error) {
         if (controller.signal.aborted) return;
         console.log(error)
+        // Fall back to a single placeholder model, but keep the failure visible;
+        // silently swapping in a fake provider left users unable to tell why a
+        // send produced nothing.
+        setIsBackendUnavailable(true)
         setModels([
           {
             id: DEFAULT_MODEL_ID,
-            name: 'DeepSeek Reasoner',
+            name: 'DeepSeek Chat',
             provider: 'deepseek',
             description: defaultDescription,
             supportsStream: true,
@@ -108,6 +115,7 @@ export const useChatModels = ({
   return {
     models,
     isModelsLoading,
+    isBackendUnavailable,
     setSelectedModelId,
     selectedModel,
     selectedModelId,

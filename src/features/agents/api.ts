@@ -45,6 +45,14 @@ export async function runAgents(request: AgentRequest, signal?: AbortSignal): Pr
   return (await response.json()).data;
 }
 
+/** Ask the runtime to cancel a running turn instead of only hanging up the SSE read. */
+export async function stopSession(sessionId: string): Promise<void> {
+  const response = await fetch(apiUrl(`/sessions/${encodeURIComponent(sessionId)}/stop`), {
+    method: 'POST', headers: languageHeaders(),
+  });
+  if (!response.ok) throw await readError(response);
+}
+
 export async function streamAgents(request: AgentRequest, onEvent: (event: AgentEvent) => void, signal?: AbortSignal): Promise<void> {
   const response = await postJSON('/agents/run', { ...request, stream: true },
     { ...languageHeaders(), Accept: 'text/event-stream' }, signal);

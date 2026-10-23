@@ -15,7 +15,7 @@ import { SSEData } from './types';
 import { useChatModels } from './hooks/useChatModels';
 import { useFileUpload } from './hooks/useFileUpload';
 import { useStickToBottom } from './hooks/useStickToBottom';
-import { streamAgents } from '@/features/agents/api';
+import { streamAgents, stopSession } from '@/features/agents/api';
 import { ApprovalCard, type Approval } from '@/features/agents/components/ApprovalCard';
 import type { MessageApproval } from '@/shared/utils/localMessages';
 import { CapabilitiesPanel, type CapabilitySelection } from '@/features/agents/components/CapabilitiesPanel';
@@ -116,6 +116,7 @@ const ChatAI: React.FC = () => {
   const {
     models,
     isModelsLoading,
+    isBackendUnavailable,
     setSelectedModelId,
     selectedModel,
     selectedModelId,
@@ -676,6 +677,11 @@ const ChatAI: React.FC = () => {
   const onRetryLastAnswer = useCallback(() => { retryHandlerRef.current() }, [])
 
   const onStopSSE = () => {
+    const sessionId = getSelectId();
+    // Cancel the run server-side too: aborting the fetch only stops this tab from
+    // reading the stream, leaving the loop to keep spending tokens and holding a
+    // sandbox lease until the 900s run timeout.
+    if (sessionId) void stopSession(sessionId).catch(() => undefined);
     controllerRef.current?.abort();
   }
 
@@ -704,6 +710,7 @@ const ChatAI: React.FC = () => {
           isLoading={isLoading}
         />
         <div className="chat-workspace">
+          {isBackendUnavailable && <div className="backend-banner" role="status">{t('chat.serverBusy')}</div>}
           <ChatHeaderOperate
             isShowShare={isShowShare}
             onCancelShare={setIsShowShare}

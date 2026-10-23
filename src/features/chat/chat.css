@@ -9,6 +9,17 @@
   overflow: hidden;
 }
 
+/* Runtime unreachable: say so instead of offering a fake model that fails silently. */
+.backend-banner {
+  flex-shrink: 0;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border-color);
+  background: color-mix(in srgb, #b6a558 14%, transparent);
+  color: var(--text-color, #20252b);
+  font-size: 13px;
+  text-align: center;
+}
+
 .chat-workspace {
   margin: 0;
   flex: 1;
@@ -506,6 +517,19 @@ blockquote {
 
 .savePicture img {
   background-color: var(--share-save-bg);
+}
+
+.savePicture:focus-visible {
+  outline: 2px solid var(--secondary-color);
+  outline-offset: 2px;
+  border-radius: 14px;
+}
+
+.shareWrap .shareError {
+  align-self: center;
+  margin-left: 8px;
+  color: #a12a2a;
+  font-size: 12px;
 }
 
 .copyText img {

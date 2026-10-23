@@ -1,11 +1,14 @@
 import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
+import logging
 import re
 import time
 
 from agentforge.sandbox.breaker import CircuitBreaker
 from agentforge.sandbox.docker_runner import Sandbox, SandboxUnavailable
+
+logger = logging.getLogger(__name__)
 
 
 class SandboxState(StrEnum):
@@ -26,11 +29,12 @@ class Lease:
 
 class SandboxPool:
     def __init__(self, runner, warm_size=2, max_size=8, idle_seconds=600,
-                 breaker=None, clock=time.monotonic):
+                 breaker=None, clock=time.monotonic, acquire_attempts=3):
         if not 0 <= warm_size <= max_size:
             raise ValueError("Warm size must be between zero and max size.")
         self.runner, self.warm_size, self.max_size = runner, warm_size, max_size
         self.idle_seconds, self.clock = idle_seconds, clock
+        self.acquire_attempts = acquire_attempts
         self.breaker = breaker or CircuitBreaker(clock=clock)
         self.entries: dict[str, Lease] = {}
         self.pending_sessions: set[str] = set()
@@ -46,9 +50,16 @@ class SandboxPool:
 
     async def _maintain(self):
         while True:
-            await asyncio.sleep(min(30, max(0.1, self.idle_seconds / 2)))
-            await self.reap()
-            await self.replenish()
+            try:
+                await asyncio.sleep(min(30, max(0.1, self.idle_seconds / 2)))
+                await self.reap()
+                await self.replenish()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # One bad cycle must not silently end maintenance: without it, idle
+                # sandboxes are never reaped and the pool leaks containers forever.
+                logger.warning("Sandbox pool maintenance cycle failed; retrying.", exc_info=True)
 
     def _schedule_replenish(self):
         if not self.closed and (self.background is None or self.background.done()):
@@ -83,12 +94,12 @@ class SandboxPool:
                 async with self.lock:
                     self.creating -= 1
 
-    async def acquire(self, session_id, image="python:3.12-slim") -> Lease:
-        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", session_id):
-            raise ValueError("Invalid sandbox session ID.")
-        if self.closed:
-            raise SandboxUnavailable("Sandbox pool is closed.")
-        selected = None
+    async def _reserve(self, session_id: str, image: str) -> Lease | None:
+        """Claim a cached sandbox for this session, else a warm one.
+
+        Returns None when the caller has to create a fresh sandbox; the lock
+        section already reserved a creation slot in that case.
+        """
         async with self.lock:
             if session_id in self.pending_sessions:
                 raise SandboxUnavailable("Session sandbox is already being created.")
@@ -98,30 +109,48 @@ class SandboxPool:
                         raise SandboxUnavailable("Session already owns an active sandbox lease.")
                     if lease.sandbox.image != image:
                         raise SandboxUnavailable("A session cannot change sandbox image.")
-                    selected = lease
-                    break
-            if selected is None and session_id not in self.workspaces:
-                selected = next((e for e in self.entries.values()
+                    self.breaker.before_call()
+                    lease.state, lease.session_id = SandboxState.CLAIMED, session_id
+                    lease.used_at = self.clock()
+                    return lease
+            if session_id not in self.workspaces:
+                warm = next((e for e in self.entries.values()
                     if e.state == SandboxState.WARM and e.sandbox.image == image), None)
-            if selected:
-                self.breaker.before_call()
-                selected.state, selected.session_id = SandboxState.CLAIMED, session_id
-                selected.used_at = self.clock()
-            else:
-                if len(self.entries) + self.creating >= self.max_size:
-                    raise SandboxUnavailable("Sandbox pool is at capacity. Wait for another session to finish.")
-                self.breaker.before_call()
-                self.creating += 1
-                self.pending_sessions.add(session_id)
-        if selected:
+                if warm is not None:
+                    self.breaker.before_call()
+                    warm.state, warm.session_id = SandboxState.CLAIMED, session_id
+                    warm.used_at = self.clock()
+                    return warm
+            if len(self.entries) + self.creating >= self.max_size:
+                raise SandboxUnavailable("Sandbox pool is at capacity. Wait for another session to finish.")
+            self.breaker.before_call()
+            self.creating += 1
+            self.pending_sessions.add(session_id)
+            return None
+
+    async def acquire(self, session_id, image="python:3.12-slim") -> Lease:
+        if not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", session_id):
+            raise ValueError("Invalid sandbox session ID.")
+        if self.closed:
+            raise SandboxUnavailable("Sandbox pool is closed.")
+        # A cached or warm sandbox can die while idle. Drop it and try another
+        # candidate instead of recursing, which had no depth limit and could
+        # exhaust the stack whenever Docker kept reporting unhealthy leases.
+        for _ in range(self.acquire_attempts):
+            selected = await self._reserve(session_id, image)
+            if selected is None:
+                # No cached or warm sandbox; a creation slot is already reserved.
+                break
             if await self.runner.healthy(selected.sandbox):
-                self.workspaces[session_id] = selected.sandbox.workspace
+                async with self.lock:
+                    self.workspaces[session_id] = selected.sandbox.workspace
                 self.breaker.success()
                 self._schedule_replenish()
                 return selected
             await self._destroy(selected)
             self.breaker.failure()
-            return await self.acquire(session_id, image)
+        else:
+            raise SandboxUnavailable("No healthy sandbox is available. Check the Docker daemon and retry.")
         try:
             sandbox = await self.runner.create(image, workspace=self.workspaces.get(session_id))
             if self.closed:

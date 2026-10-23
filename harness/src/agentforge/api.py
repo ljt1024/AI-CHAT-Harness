@@ -1,5 +1,7 @@
 import asyncio
+from collections import OrderedDict
 from contextlib import asynccontextmanager
+import contextvars
 import json
 import logging
 from urllib.parse import quote
@@ -154,8 +156,41 @@ def create_app(settings=None, store=None, gateway=None):
     skills_layer = next(layer for layer in runtime.middleware.layers if layer.name == "SkillsSync")
     skills_layer.sync, skills_layer.enabled = sync_skills, True
     approvals = ApprovalManager(store, settings.approval_timeout)
-    runtime.permission_check = approvals.check
+    # The runtime only passes (agent, tool, call, emit), so carry the session on a
+    # context var to associate a pending approval with the run that requested it.
+    current_session = contextvars.ContextVar("agentforge_session", default="")
+
+    async def permission_check(agent, tool, call, emit):
+        return await approvals.check(agent, tool, call, emit, session_id=current_session.get())
+
+    runtime.permission_check = permission_check
     runs = {}
+    # Finished runs keep their event log briefly so a reconnecting SSE client can
+    # replay the tail it missed. Bounded, otherwise long-lived processes would
+    # retain every event log forever.
+    finished_runs = OrderedDict()
+    FINISHED_RUN_LIMIT = 16
+
+    def retire_run(session_id, task, bus):
+        if runs.get(session_id, (None, None))[1] is not task:
+            return
+        runs.pop(session_id, None)
+        finished_runs[session_id] = bus
+        finished_runs.move_to_end(session_id)
+        while len(finished_runs) > FINISHED_RUN_LIMIT:
+            finished_runs.popitem(last=False)
+
+    def lookup_run(session_id):
+        """Resolve a session to (bus, terminal) from active runs then finished ones."""
+        if session_id in runs:
+            bus, running = runs[session_id]
+            return bus, running.done()
+        bus = finished_runs.get(session_id)
+        if bus is None:
+            return None
+        finished_runs.move_to_end(session_id)
+        return bus, True
+
     default = AgentDefinition(id="default", name="AgentForge", tools=["read_file", "write_file", "grep", "glob", "run_command"])
 
     @asynccontextmanager
@@ -178,6 +213,8 @@ def create_app(settings=None, store=None, gateway=None):
     app = FastAPI(title="AgentForge", lifespan=lifespan)
     app.state.runtime, app.state.approvals = runtime, approvals
     app.state.sandbox_pool = pool
+    # Exposed so operators (and the runtime status endpoint) can inspect what is running.
+    app.state.runs, app.state.finished_runs = runs, finished_runs
 
     def ready(model=False):
         if not app.state.ready:
@@ -188,7 +225,20 @@ def create_app(settings=None, store=None, gateway=None):
 
     @app.get("/health")
     async def health():
-        return {"status": "ok" if app.state.ready else "degraded", "database": app.state.ready, "mode": "runtime"}
+        # Probe the three things a run actually depends on. Reporting "ok" on the
+        # database alone hid a missing model key or a dead Docker daemon until a
+        # run failed, which made the endpoint useless for triage.
+        adapter = gateway.adapters.get("deepseek")
+        model_ready = bool(getattr(adapter, "api_key", None))
+        try:
+            async with asyncio.timeout(3):
+                await pool.runner.connect()
+            docker_ready = True
+        except Exception:
+            docker_ready = False
+        return {"status": "ok" if app.state.ready and model_ready else "degraded",
+                "database": app.state.ready, "model_key": model_ready, "docker": docker_ready,
+                "sandbox": pool.status(), "active_runs": len(runs), "mode": "runtime"}
 
     @app.get("/api/models")
     async def models():
@@ -349,6 +399,7 @@ def create_app(settings=None, store=None, gateway=None):
         return {"code": 201, "data": await store.put("agents", agent.model_dump())}
 
     async def execute(agent, task, session_id, bus, turn_id, remote):
+        current_session.set(session_id)
         try:
             async with asyncio.timeout(900):
                 previous = await store.get("sessions", session_id)
@@ -413,6 +464,7 @@ def create_app(settings=None, store=None, gateway=None):
             return sandbox.workspace if sandbox else Workspace(settings.agentforge_workspace / session_id)
         bus = ArtifactEventBus(runtime, store, workspace)
         running = asyncio.create_task(execute(agent, task, session_id, bus, turn_id, remote))
+        running.add_done_callback(lambda task: retire_run(session_id, task, bus))
         runs[session_id] = (bus, running)
         return bus, running
 
@@ -435,7 +487,9 @@ def create_app(settings=None, store=None, gateway=None):
         bus, running = start(agent, request.input, request.sessionId, request.turnId, remote)
         if not request.stream:
             await running
-            final = bus.events[-1]
+            final = bus.events[-1] if bus.events else None
+            if final is None:
+                raise HTTPException(502, "Run produced no result.")
             if final["type"] == "error":
                 raise HTTPException(502, final["message"])
             return {"code": 200, "data": legacy_result(final["result"], request.input)}
@@ -461,17 +515,95 @@ def create_app(settings=None, store=None, gateway=None):
         agent, remote = await prepare_agent(AgentDefinition.model_validate(definition))
         bus, _ = start(agent, request.task, session_id, turn_id, remote)
         async with bus.condition:
-            await bus.condition.wait_for(lambda: bool(bus.events))
-        return {"session_id": session_id, "turn_id": turn_id, "trace_id": bus.events[0].get("trace_id")}
+            # Bound the wait: a provider that accepts the request but never emits
+            # must not hold this HTTP request open for the full 900s run timeout.
+            try:
+                async with asyncio.timeout(30):
+                    await bus.condition.wait_for(lambda: bool(bus.events))
+            except TimeoutError:
+                logger.warning("Session %s emitted no first event within 30s.", session_id)
+        return {"session_id": session_id, "turn_id": turn_id,
+                "trace_id": bus.events[0].get("trace_id") if bus.events else None}
 
     @app.get("/api/sessions/{session_id}/events")
     async def session_events(session_id: str, after: int = Query(0, ge=0)):
-        if session_id not in runs:
+        found = lookup_run(session_id)
+        if found is None:
             raise HTTPException(404, "Session events are unavailable in this process.")
-        bus, running = runs[session_id]
-        if after >= len(bus.events) and running.done():
+        bus, terminal = found
+        if after >= len(bus.events) and terminal:
             return StreamingResponse(iter([]), media_type="text/event-stream")
         return StreamingResponse(event_frames(bus, after=after), media_type="text/event-stream")
+
+    def run_state(session_id):
+        entry = runs.get(session_id)
+        if entry is None:
+            if session_id in finished_runs:
+                return None, True
+            return None, None
+        bus, running = entry
+        return bus, running.done()
+
+    @app.get("/api/sessions")
+    async def list_sessions():
+        ready()
+        sessions = await store.list("sessions")
+        view = []
+        for session in sessions:
+            session_id = session.get("id") or session.get("sessionId")
+            _, terminal = run_state(session_id)
+            view.append({"id": session_id, "agent_id": session.get("agent_id"),
+                "status": session.get("status") or ("running" if terminal is False else "idle"),
+                "isolated": bool(session.get("isolated", False)),
+                "active": terminal is False,
+                "updated_at": session.get("updated_at")})
+        view.sort(key=lambda item: item.get("updated_at") or "", reverse=True)
+        return {"code": 200, "data": view}
+
+    @app.post("/api/sessions/{session_id}/stop")
+    async def stop_session(session_id: str):
+        entry = runs.get(session_id)
+        if entry is None:
+            raise HTTPException(404, "No active run for this session.")
+        bus, running = entry
+        # Release approvals first so the loop unwinds through its normal path and
+        # the trace records a denial instead of an abrupt cancellation.
+        cancelled = approvals.cancel_session(session_id)
+        if not running.done():
+            running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        return {"code": 200, "data": {"session_id": session_id, "stopped": True,
+            "cancelled_approvals": cancelled}}
+
+    @app.delete("/api/sessions/{session_id}")
+    async def delete_session(session_id: str):
+        ready()
+        entry = runs.get(session_id)
+        if entry is not None:
+            bus, running = entry
+            approvals.cancel_session(session_id)
+            if not running.done():
+                running.cancel()
+            await asyncio.gather(running, return_exceptions=True)
+        # Drop the session together with everything derived from it, so removing a
+        # conversation does not leave orphaned traces, turns or artifacts behind.
+        traces = await store.list("traces", {"sessionId": session_id})
+        for trace in traces:
+            for collection in ("turns", "tool_calls"):
+                await store.db[collection].delete_many({"trace_id": trace["id"]})
+        await store.db.traces.delete_many({"sessionId": session_id})
+        await store.db.checkpoints.delete_many({"sessionId": session_id})
+        await store.db.artifacts.delete_many({"sessionId": session_id})
+        result = await store.db.sessions.delete_one({"id": session_id})
+        if result.deleted_count == 0:
+            raise HTTPException(404, "Session not found.")
+        finished_runs.pop(session_id, None)
+        return {"code": 200, "data": {"id": session_id, "deleted": True}}
+
+    @app.get("/api/approvals")
+    async def list_approvals():
+        # Decisions resolve in-memory, so this stays available even when Mongo is down.
+        return {"code": 200, "data": approvals.pending_list()}
 
     @app.post("/api/approvals/{call_id}")
     async def approve(call_id: str, request: ApprovalRequest):

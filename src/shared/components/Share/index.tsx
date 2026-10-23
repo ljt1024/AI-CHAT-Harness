@@ -15,7 +15,7 @@ const Share: React.FC<ShareProps> = ({ targetElement, setIsShowShare }) => {
     const {
         image,
         isImgLoading,
-        error: _error,
+        error,
         takeScreenshot,
         download,
         reset
@@ -61,10 +61,18 @@ const Share: React.FC<ShareProps> = ({ targetElement, setIsShowShare }) => {
     return (
         <>
             <div className='shareWrap'>
-                <div className='shareItem savePicture' onClick={onTakeScreenshot}>
+                <div className='shareItem savePicture' role="button" tabIndex={0}
+                    aria-label={t('share.saveImage')} aria-disabled={isImgLoading}
+                    onClick={onTakeScreenshot}
+                    onKeyDown={event => {
+                        if (event.key !== 'Enter' && event.key !== ' ') return;
+                        event.preventDefault();
+                        onTakeScreenshot();
+                    }}>
                     <img src={PictuerIcon} alt="" />
                     <span>{isImgLoading ? t('share.generating') : t('share.saveImage')}</span>
                 </div>
+                {error && <span role="alert" className='shareError'>{error}</span>}
             </div>
             {previewNode && typeof document !== 'undefined' ? createPortal(previewNode, document.body) : null}
         </>

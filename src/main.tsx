@@ -1,4 +1,5 @@
 import { MessagePopProvider } from './shared/components/MessagePop';
+import ErrorBoundary from './shared/components/ErrorBoundary';
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
@@ -17,7 +18,9 @@ createRoot(rootElement).render(
   <LanguageProvider>
     <ThemeProvider>
       <ChatProvider>
-        <MessagePopProvider><App /></MessagePopProvider>
+        <MessagePopProvider>
+          <ErrorBoundary><App /></ErrorBoundary>
+        </MessagePopProvider>
       </ChatProvider>
     </ThemeProvider>
   </LanguageProvider>

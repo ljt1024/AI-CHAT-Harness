@@ -104,9 +104,6 @@ const Popover: React.FC<PopoverProps> = ({
     const scrollY = window.scrollY;
     const scrollX = window.scrollX;
 
-    triggerRef.current.addEventListener('scoll', (res)=>{
-        console.log(res)
-    })  
     let top = 0;
     let left = 0;
 

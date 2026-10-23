@@ -8,6 +8,14 @@ import { useLanguage } from '@/app/providers/LanguageContext';
 import { ModelOption, supportsDeepThinking, supportsImageUnderstanding } from '@/shared/types/model';
 import './index.css'
 
+/**
+ * The custom-model form posts to /api/models/custom, which the Harness runtime
+ * does not implement: the gateway registers DeepSeek only and storing third-party
+ * API keys is deferred with the M2A security milestone. Expose it only for
+ * development against a backend that has the endpoints.
+ */
+const SHOW_MODEL_CONFIG = (import.meta as any).env?.VITE_SHOW_MODEL_CONFIG === 'true';
+
 interface ChatHeaderOperateProps {
   isShowShare: boolean;
   onCancelShare: (showShare: boolean) => void;
@@ -21,15 +29,14 @@ const ChatHeaderOperate: React.FC<ChatHeaderOperateProps> = (props) => {
     const { t } = useLanguage()
     const { isShowShare, onCancelShare, models, selectedModelId, isModelLoading = false, onSelectModel } = props
     const [category, setCategory] = useState('all');
-    const [configuring, setConfiguring] = useState(false);
-    const filtered = models.filter(model => category === 'all' || (category === 'custom' ? model.custom : category === 'image' ? model.supportsImageGeneration : category === 'vision' ? supportsImageUnderstanding(model) : !model.supportsImageGeneration && !supportsImageUnderstanding(model)));
+    const [configuring, setConfiguring] = useState(false);    const filtered = models.filter(model => category === 'all' || (category === 'custom' ? model.custom : category === 'image' ? model.supportsImageGeneration : category === 'vision' ? supportsImageUnderstanding(model) : !model.supportsImageGeneration && !supportsImageUnderstanding(model)));
     const selectedModel = models.find((model) => model.id === selectedModelId)
     const selectedModelName = selectedModel?.name || selectedModelId || t('header.placeholder')
 
     const modelContent = (
         <div className="modelPopover" onClick={event => { if (!(event.target as HTMLElement).closest('.modelCard')) event.stopPropagation(); }}>
             <div className="modelPopoverTitle">{t('header.selectModelTitle')}</div>
-            <button type="button" disabled={isModelLoading} className="model-config-open" onClick={() => setConfiguring(value => !value)}>{t('modelConfig.manage')}</button>
+            {SHOW_MODEL_CONFIG && <button type="button" disabled={isModelLoading} className="model-config-open" onClick={() => setConfiguring(value => !value)}>{t('modelConfig.manage')}</button>}
             {configuring ? <CustomModelForm models={models} onClose={() => setConfiguring(false)} /> : <>
             <div className="model-categories" role="group" aria-label={t('modelConfig.categories')}>{(['all', 'text', 'vision', 'image', 'custom'] as const).map(value => <button type="button" key={value} aria-pressed={category === value} onClick={() => setCategory(value)}>{t(`modelConfig.category.${value}`)}</button>)}</div>
             <div className="modelPopoverList">
