@@ -31,7 +31,6 @@ hljs.registerLanguage('mermaid', ()=> {
 
 interface CodeBlockProps {
   node?: any;
-  inline?: boolean;
   className?: string;
   children?: React.ReactNode;
   [key: string]: any;
@@ -65,17 +64,16 @@ const isHtmlLikeCode = (language: string, source: string) => {
 };
 
 // 自定义代码块渲染
-const codeBlockRenderer = React.memo(({ node, inline, className, children, ...props }: CodeBlockProps) => {
+const codeBlockRenderer = ({ className, codeText }: { className?: string; codeText: string }) => {
     const { t } = useLanguage();
     const [isCopy, setIsCopy] = useState(false);
     const [isPreviewOpen, setIsPreviewOpen] = useState(false);
     const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false);
-    const codeText = String(children ?? '');
     const previewDialogRef = useRef<HTMLDivElement>(null);
     const match = /language-([\w-]+)/.exec(className || '');
     // console.log(children)
     let language = (match ? match[1] : 'plaintext').toLowerCase();
-    const enableHtmlPreview = !inline && isHtmlLikeCode(language, codeText);
+    const enableHtmlPreview = isHtmlLikeCode(language, codeText);
     const previewDoc = useMemo(() => {
         if (!enableHtmlPreview) {
             return '';
@@ -126,15 +124,6 @@ const codeBlockRenderer = React.memo(({ node, inline, className, children, ...pr
     //     }
     // }
     // language = chacheLang.get(language)
-    if (inline) {
-        return <code {...props}>{children}</code>;
-    }
-
-    if (language === 'plaintext' && !enableHtmlPreview) {
-        return <span style={{ overflow: 'auto', fontSize: '16px' }}>
-            <code {...props} >{children}</code>
-        </span>
-    }
     let codeHTML = ''
     try {
         codeHTML = hljs.highlight(codeText, { language }).value;
@@ -216,7 +205,7 @@ const codeBlockRenderer = React.memo(({ node, inline, className, children, ...pr
     };
 
     return (
-        <pre {...props}>
+        <pre>
             <div className='code-copy'>
                 <span>{language}</span>
                 <div className='codeActions'>
@@ -287,7 +276,24 @@ const codeBlockRenderer = React.memo(({ node, inline, className, children, ...pr
                 : null}
         </pre>
     );
-});
+};
+
+const CodeBlock = React.memo(codeBlockRenderer);
+
+// react-markdown v10 no longer passes an `inline` flag, so every code node used
+// to fall through to the block renderer: inline code rendered as a block, and an
+// inline span like `<label>` was treated as an HTML code block with a preview.
+// Block code is the one wrapped in `pre`, so `pre` decides instead.
+const inlineCodeRenderer = ({ className, children }: CodeBlockProps) => (
+    <code className={className}>{children}</code>
+);
+
+const preRenderer = ({ children }: { children?: React.ReactNode }) => {
+    const element = React.Children.toArray(children).find((item) => React.isValidElement(item));
+    const props = React.isValidElement(element) ? element.props as CodeBlockProps : {};
+    const text = Array.isArray(props.children) ? props.children.join('') : String(props.children ?? '');
+    return <CodeBlock className={props.className} codeText={text} />;
+};
 
 interface MarkdownContentProps {
   msg: string;
@@ -299,7 +305,8 @@ const MarkdownContent = React.memo(({ msg }: MarkdownContentProps) => {
         <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
-                code: codeBlockRenderer,
+                pre: preRenderer,
+                code: inlineCodeRenderer,
                 a: ({ href, children, title }) => <a href={resolveFileDownloadUrl(href)} title={title}>{children}</a>,
             }}>
             {msg}
