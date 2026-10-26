@@ -33,3 +33,5 @@ out/
 
 # Local conversations, uploads, checkpoints and secrets
 end/local_storage/
+# Agent working memory (never commit)
+.workbuddy/
