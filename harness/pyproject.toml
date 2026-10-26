@@ -7,6 +7,7 @@ dependencies = [
   "pydantic-settings>=2.8,<3", "motor>=3.7,<4", "mcp>=1.12,<2",
   "jsonschema>=4.23,<5",
   "docker>=7.1,<8", "python-multipart>=0.0.20,<1",
+  "pyyaml>=6,<7",
 ]
 
 [dependency-groups]

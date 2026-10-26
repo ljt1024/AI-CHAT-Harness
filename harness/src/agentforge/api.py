@@ -22,12 +22,14 @@ from agentforge.loop import Runtime
 from agentforge.middleware import MiddlewareStack
 from agentforge.models import AgentDefinition, ModelRef, new_id
 from agentforge.permissions import ApprovalManager
+from agentforge.policy import InterventionPolicy
 from agentforge.prompts import with_response_language
 from agentforge.store import MongoDBStore
+from agentforge.tools.ask import AskUserTool
 from agentforge.tools.base import ToolRegistry
 from agentforge.tools.fs import FileTool, Workspace
 from agentforge.tools.shell import ShellTool
-from agentforge.sandbox.docker_runner import DockerRunner
+from agentforge.sandbox.docker_runner import DockerRunner, SandboxUnavailable
 from agentforge.sandbox.pool import SandboxPool
 from agentforge.sandbox.tools import SandboxTool
 from agentforge.models import SandboxPolicy
@@ -58,6 +60,24 @@ class SessionRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     approved: StrictBool
     reason: str = Field(default="", max_length=2000)
+
+
+class SandboxFile(BaseModel):
+    path: str = Field(min_length=1, max_length=512)
+    content: str = Field(max_length=8_000_000)
+
+
+class SandboxExecRequest(BaseModel):
+    """One-shot execution inside a disposable sandbox.
+
+    Lets host-side tooling run untrusted code with the agent's isolation
+    instead of the host's privileges: offline, read-only root, no capabilities.
+    """
+
+    command: list[str] = Field(min_length=1, max_length=64)
+    files: list[SandboxFile] = Field(default_factory=list, max_length=200)
+    timeout: float = Field(default=30, gt=0, le=600)
+    image: str = Field(default="python:3.12-slim", pattern=r"^[a-zA-Z0-9._:/@-]{1,200}$")
 
 
 class ChatMessage(BaseModel):
@@ -143,6 +163,7 @@ def create_app(settings=None, store=None, gateway=None):
         for name in ("read_file", "write_file", "grep", "glob"):
             registry.register(FileTool(workspace, name))
         registry.register(ShellTool(workspace))
+        registry.register(AskUserTool())
         for name in SKILL_TOOL_NAMES:
             registry.register(SkillTool(skill_manager, name))
         return registry
@@ -155,7 +176,8 @@ def create_app(settings=None, store=None, gateway=None):
             ctx.metadata["skills"] = await skill_manager.sync(ctx.agent.skills, sandbox)
     skills_layer = next(layer for layer in runtime.middleware.layers if layer.name == "SkillsSync")
     skills_layer.sync, skills_layer.enabled = sync_skills, True
-    approvals = ApprovalManager(store, settings.approval_timeout)
+    policy = InterventionPolicy.load(settings.intervention_policy)
+    approvals = ApprovalManager(store, settings.approval_timeout, policy)
     # The runtime only passes (agent, tool, call, emit), so carry the session on a
     # context var to associate a pending approval with the run that requested it.
     current_session = contextvars.ContextVar("agentforge_session", default="")
@@ -191,7 +213,8 @@ def create_app(settings=None, store=None, gateway=None):
         finished_runs.move_to_end(session_id)
         return bus, True
 
-    default = AgentDefinition(id="default", name="AgentForge", tools=["read_file", "write_file", "grep", "glob", "run_command"])
+    default = AgentDefinition(id="default", name="AgentForge",
+        tools=["read_file", "write_file", "grep", "glob", "run_command", "ask_user"])
 
     @asynccontextmanager
     async def lifespan(app):
@@ -425,8 +448,14 @@ def create_app(settings=None, store=None, gateway=None):
                     run_sandboxes[session_id] = lease.sandbox
                     registry = ToolRegistry()
                     for name in agent.tools:
+                        # Asking a human needs no container, so it stays a builtin
+                        # even when every other tool is redirected into the sandbox.
+                        if name == AskUserTool.name:
+                            registry.register(AskUserTool())
+                            continue
                         if name not in {tool.name for tool in remote} | set(SKILL_TOOL_NAMES):
-                            registry.register(SandboxTool(pool.runner, lease.sandbox, name, agent.sandbox_policy.timeout))
+                            registry.register(SandboxTool(pool.runner, lease.sandbox, name,
+                                                         agent.sandbox_policy.timeout))
                 for name in SKILL_TOOL_NAMES:
                     registry.tools.pop(name, None)
                     registry.register(SkillTool(skill_manager, name, pool.runner,
@@ -439,7 +468,9 @@ def create_app(settings=None, store=None, gateway=None):
                     "sessionId": session_id, "isolated": isolated})
                 await runtime.run(agent, task, session_id, bus, turn_id=turn_id)
         except Exception:
-            logger.warning("Run failed for session %s", session_id)
+            # exc_info matters here: the run is a background task, so without it a
+            # failure is invisible and the user only sees a generic error event.
+            logger.warning("Run failed for session %s", session_id, exc_info=True)
             if not bus.events or bus.events[-1]["type"] != "error":
                 await bus.emit({"type": "error", "sessionId": session_id,
                                 "message": "Run failed. Check configuration and retry."})
@@ -604,6 +635,40 @@ def create_app(settings=None, store=None, gateway=None):
     async def list_approvals():
         # Decisions resolve in-memory, so this stays available even when Mongo is down.
         return {"code": 200, "data": approvals.pending_list()}
+
+    @app.get("/api/interventions/policy")
+    async def intervention_policy():
+        # Answers "what does the system stop me for" without reading the source.
+        return {"code": 200, "data": policy.explain()}
+
+    @app.post("/api/sandbox/exec")
+    async def sandbox_exec(request: SandboxExecRequest):
+        # Runs host-supplied files and a command inside a disposable offline
+        # container. This is the escape hatch that keeps skill scripts and other
+        # untrusted code off the host: the same pool, seccomp profile and network
+        # isolation the agent uses, without going through a model turn.
+        session_id = new_id()
+        lease = None
+        try:
+            lease = await pool.acquire(session_id, request.image)
+            for item in request.files:
+                relative = item.path
+                content = item.content
+                if relative.startswith("/") or ".." in relative.split("/"):
+                    raise HTTPException(422, f"Unsafe file path: {relative}")
+                try:
+                    target = lease.sandbox.workspace.path(relative)
+                except ValueError as exc:
+                    raise HTTPException(422, str(exc)) from None
+                await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(target.write_text, content, encoding="utf-8")
+            result = await pool.runner.execute(lease.sandbox, request.command, request.timeout)
+            return {"code": 200, "data": {"ok": result.ok, "output": result.output, "error": result.error}}
+        except SandboxUnavailable as exc:
+            raise HTTPException(503, str(exc)) from None
+        finally:
+            if lease is not None:
+                await pool.release(session_id)
 
     @app.post("/api/approvals/{call_id}")
     async def approve(call_id: str, request: ApprovalRequest):

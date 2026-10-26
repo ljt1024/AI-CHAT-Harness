@@ -34,8 +34,10 @@ export interface AgentRequest {
   turnId?: string;
 }
 
-export async function resolveApproval(id: string, approved: boolean): Promise<void> {
-  const response = await postJSON(`/approvals/${encodeURIComponent(id)}`, { approved }, languageHeaders());
+export async function resolveApproval(id: string, approved: boolean, reason = ''): Promise<void> {
+  // For a question the answer rides along as "reason"; for a gate it is the refusal note.
+  const response = await postJSON(`/approvals/${encodeURIComponent(id)}`, { approved, reason },
+    languageHeaders());
   if (!response.ok) throw await readError(response);
 }
 

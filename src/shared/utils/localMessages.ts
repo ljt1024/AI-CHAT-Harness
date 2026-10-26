@@ -17,6 +17,8 @@ export interface MessageApproval {
     tool: string;
     args: Record<string, unknown>;
     status: 'pending' | 'approved' | 'denied' | 'closed';
+    // "approve" gates an action; "input" collects information the model asked for.
+    kind?: 'approve' | 'input';
 }
 
 export interface Message {

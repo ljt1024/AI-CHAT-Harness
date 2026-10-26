@@ -1,0 +1,95 @@
+# Where AgentForge stops and asks a human.
+#
+# This file is the single source of truth for human intervention. The values hard
+# coded on each tool class are only a fallback for tools missing from this file.
+# Two axes decide what happens:
+#
+#   level  auto | deny | confirm  -- does the run stop?
+#   kind   approve | input        -- what is the human asked for?
+#
+# approve = a yes/no gate on an action (fail closed: a timeout denies).
+# input   = the model is missing information only the human has (fail open: a
+#           timeout lets the run continue without an answer).
+# Rules are matched in order; the first match wins.
+version: 1
+
+defaults:
+  level: auto
+  timeout: 300
+  on_timeout: deny
+
+tools:
+  # ---------- reading is always free ----------
+  read_file: auto
+  glob: auto
+  grep: auto
+  read_file_lines: auto
+
+  # ---------- writing needs a path check, not a human ----------
+  write_file:
+    level: rule
+    rules:
+      - level: deny
+        reason: Credentials and VCS internals are never writable.
+        path_matches: ["**/.env", "**/.env.*", "**/.git/**", "**/.ssh/**", "**/*.pem", "*secret*"]
+      - level: confirm
+        reason: The target is outside the session workspace.
+        path_outside_workspace: true
+      - level: auto
+
+  # ---------- commands: the dangerous ones only ----------
+  run_command:
+    level: rule
+    # Inside a live container the isolation boundary is the guard, so routine
+    # commands stay silent and only destructive ones escalate.
+    in_sandbox: auto
+    rules:
+      - level: confirm
+        reason: Destructive or privilege-escalating command.
+        command_matches:
+          - "rm\\s+(-[a-zA-Z]*[rf]|.*--(force|recursive))"
+          - "\\bsudo\\b"
+          - "(curl|wget)\\b[^|]*\\|\\s*(ba)?sh"
+          - "chmod\\s+(777|\\+s)"
+          - ":\\(\\)\\s*\\{"
+          - "\\bmkfs\\b|\\bdd\\s+if="
+      - level: deny
+        reason: Command touches files outside the workspace.
+        path_outside_workspace: true
+      - level: auto
+        command_matches: ["^(ls|cat|pwd|wc|head|tail|echo|sleep|true|false|python3?|node|git\\s+(status|log|diff|show))\\b"]
+      - level: confirm
+        reason: Command is not on the routine allowlist.
+
+  # ---------- skills change what the agent can do ----------
+  install_skill: confirm
+  uninstall_skill: confirm
+  list_skills: auto
+  run_skill: confirm
+
+  # ---------- the model asking a human for missing information ----------
+  # The model decides *what* to ask; this entry only decides that asking is
+  # allowed at all and how it behaves when nobody answers.
+  ask_user:
+    level: confirm
+    kind: input
+    timeout: 600
+    on_timeout: skip
+
+  # ---------- remote tools: unknown code, so gate by default ----------
+  "mcp:*": confirm
+  "mcp:read_*": auto
+  "mcp:list_*": auto
+  "mcp:get_*": auto
+
+model_requests:
+  enabled: true
+  # A model that keeps asking is a stuck model. Cap it per run.
+  max_per_run: 3
+  timeout: 600
+  on_timeout: skip
+  allowed_fields: [text, choice]
+  # Never let a run fish for credentials through the approval channel.
+  forbid_patterns: ["password", "passwd", "api[_-]?key", "\\btoken\\b", "secret", "私钥"]
+
+explain: true

@@ -511,10 +511,13 @@ const ChatAI: React.FC = () => {
             return next;
           });
         }
-        if (event.type === 'await_approval') {
-          const record: MessageApproval = { id: event.call_id, tool: event.tool, args: event.arguments, status: 'pending' };
+        if (event.type === 'await_approval' || event.type === 'await_input') {
+          // A gate asks for permission; a question asks for information. Both stop
+          // the run, so both surface above the composer.
+          const kind: MessageApproval['kind'] = event.type === 'await_input' ? 'input' : 'approve';
+          const record: MessageApproval = { id: event.call_id, tool: event.tool, args: event.arguments, status: 'pending', kind };
           assistant.approvals = [...(assistant.approvals || []).filter(item => item.id !== record.id), record];
-          setApprovals(items => [...items, { sessionId, id: event.call_id, tool: event.tool, args: event.arguments, status: 'pending' }]);
+          setApprovals(items => [...items, { sessionId, id: event.call_id, tool: event.tool, args: event.arguments, status: 'pending', kind }]);
           setPreviewSelection(previous => previous?.sessionId === sessionId ? null : previous);
         }
         if (event.type === 'approval_resolved') {

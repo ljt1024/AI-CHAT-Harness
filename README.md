@@ -93,6 +93,19 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 - 非 root 运行、只读根分区、仅工作区可写、默认禁用网络、不继承宿主环境变量（只传 `PATH`/`LANG`/`HOME`）。
 - 预热池按会话归属隔离，空闲回收；工作区快照以 tar 存入 GridFS，恢复前校验归属、完整性与归档路径。
 - 沙箱失败**不会**回退到宿主执行。离线命令与已安装技能脚本默认自动执行；宿主命令、技能安装、MCP 调用仍需人工确认（见 [ADR-0013](docs/adr/0013-autonomous-docker-commands.md)）。
+- `POST /api/sandbox/exec` 把沙箱开放给宿主侧工具：一次性容器里放入文件并执行命令，不经模型回合，复用同一套隔离参数。
+
+#### 在沙箱里跑宿主侧脚本
+
+宿主上的技能脚本若直接执行，会以当前用户权限运行。`scripts/skill-run.py` 把这类脚本送进沙箱：
+
+```bash
+scripts/skill-run.py ~/.workbuddy/skills/<skill>          # 自动识别 run.py / main.sh
+scripts/skill-run.py <skill_dir> python run.py --flag      # 显式指定命令
+scripts/audit-skills.sh [dir]                              # 安装前静态审计（只读，不执行）
+```
+
+实测结果：`cwd=/workspace`、网络阻断、根分区只读、以宿主 uid 运行。容器隔离能限制**后果**，但挡不住提示注入——指令文档必须被读入上下文才有效，所以安装前仍需人工过一遍。
 
 ### 技能与 MCP
 
@@ -115,14 +128,32 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 - **产物预览**：≥1101px 时自动打开；窄视口改为手动点开，避免全屏预览遮住整段会话。
 - 中英文双语，明暗主题，Markdown 与代码复制。
 
+### 人工介入（HITL）
+
+介入点不再散落在源码里，统一由 [`config/intervention.yaml`](config/intervention.yaml) 声明，代码里各工具的级别退化为兜底。两类介入共用同一套挂起通道（`asyncio.Future` + SSE 事件 + `/api/approvals/{id}`），但语义相反：
+
+| | 批准型 `approve` | 信息型 `input` |
+|---|---|---|
+| 谁触发 | 系统策略（危险命令、越界写入、装技能） | 模型自己，通过 `ask_user` 工具 |
+| 问什么 | 这个动作能不能做 | 这个参数我不知道，你知道吗 |
+| 超时 | **拒绝**（fail-closed） | **跳过**（fail-open，人不在也让任务继续） |
+
+- 规则细化到**参数级**：`run_command` 的 `ls` 与 `rm -rf` 走不同规则，`write_file` 命中 `.env` / `*secret*` 直接拒绝。
+- 策略规则只能**收紧**工具的默认级别，不能放松——否则"把 ls 列为常规"会连带放开更严格的宿主机 shell。
+- 信息型自带闸门：每轮最多问 `model_requests.max_per_run` 次，问题命中 `forbid_patterns`（密钥类）时在到达用户之前就被拒绝。
+- `GET /api/interventions/policy` 返回解析后的完整策略，回答"系统到底在哪些地方拦我"。
+- 交互卡片渲染在输入框上方；交互卡不进上下文，只在消息里留一行可展开的审计轨迹（已批准 / 已拒绝 / 已回复 / 已跳过）。
+
 ## 项目结构
 
 ```text
 AI-CHAT-Harness/
 ├── src/                  # 前端：app / features(chat, agents) / shared / infrastructure
+├── config/               # intervention.yaml：人工介入策略（唯一真理源）
 ├── harness/
 │   ├── src/agentforge/   # FastAPI 运行时：api、loop、gateway、middleware、sandbox、
-│   │                     #   tools、skills、capabilities、artifacts、permissions、store
+│   │                     #   tools、skills、capabilities、artifacts、permissions、
+│   │                     #   policy、store
 │   └── tests/            # unit + e2e（真实 Docker / MongoDB 用例会自动跳过缺口环境）
 ├── docs/                 # IMPLEMENTATION、CAPABILITIES 与 ADR 0001-0013
 ├── mcp-server/           # 独立 MCP 示例服务

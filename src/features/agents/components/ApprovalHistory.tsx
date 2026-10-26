@@ -12,6 +12,12 @@ type ResolvedApproval = MessageApproval & { status: keyof typeof STATUS_KEY };
 
 const MARK = { approved: '✓', denied: '✕', closed: '–' } as const;
 
+// A question is not approved or denied; it was answered or skipped.
+function statusKey(item: MessageApproval) {
+  if (item.kind !== 'input') return STATUS_KEY[item.status as keyof typeof STATUS_KEY];
+  return item.status === 'denied' ? 'approval.skipped' : 'approval.answered';
+}
+
 /**
  * Compact, per-turn audit trail of the human approvals that were requested while the
  * agent worked. Full arguments stay one click away so the transcript still explains
@@ -40,7 +46,7 @@ export function ApprovalHistory({ approvals }: { approvals: MessageApproval[] })
               {MARK[item.status]}
             </span>
             <code>{item.tool}</code>
-            <span className="approval-record-status">{t(STATUS_KEY[item.status])}</span>
+            <span className="approval-record-status">{t(statusKey(item))}</span>
           </summary>
           <pre>{JSON.stringify(item.args, null, 2)}</pre>
         </details>
