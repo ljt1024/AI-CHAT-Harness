@@ -93,6 +93,12 @@ def derive_id(name: str | None) -> str:
     is more useful than a guess invented from the hostname.
     """
     slug = re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_")[:20].rstrip("_")
+    # Catalogues often call their servers "MCP-Something". Runtime tool names are
+    # already namespaced as mcp_<id>__<tool>, so keep the prefix out of the id or
+    # every tool ends up called mcp_mcp_something__tool.
+    trimmed = re.sub(r"^mcp_", "", slug)
+    if trimmed:
+        slug = trimmed
     return slug if _ID.match(slug) else "mcp"
 
 
@@ -159,6 +165,21 @@ def public_server(server: dict) -> dict:
             "tools": server.get("tools", []), "hasToken": bool(server.get("token"))}
 
 
+async def run_servers(store, pinned, auto_attach: bool = True):
+    """Which servers a run may use, and whether that was a promise.
+
+    Pinning a server on an agent definition is an explicit requirement. With no
+    pin, the registry itself is the opt-in: registering a server means every run
+    may use it, which is what lets MCP work without a per-conversation picker.
+    Returns `(ids, required)` so a caller can fail hard on a missing pin while
+    skipping an auto-attached server that happens to be offline.
+    """
+    pinned = list(dict.fromkeys(pinned))
+    if pinned or not auto_attach:
+        return pinned, set(pinned)
+    return [server["id"] for server in await store.list("mcp_servers")], set()
+
+
 async def server_tools(server, discover_timeout: float | None = None,
                        call_timeout: float | None = None):
     try:
@@ -170,11 +191,13 @@ async def server_tools(server, discover_timeout: float | None = None,
         raise ValueError("MCP server exceeds the 64-tool limit.")
     if len({tool.name for tool in tools}) != len(tools):
         raise ValueError("MCP server returned duplicate tool names.")
+    # `tool.permission` is left as the tool derived it from its own MCP annotation:
+    # a read-only tool runs without asking while anything that can change state
+    # still asks. `mcp_*` rules in the policy file override in either direction.
     for tool in tools:
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,38}", tool.name):
             raise ValueError("MCP tool names must use 1..38 letters, digits, underscores or hyphens.")
         tool.remote_name = tool.name
         tool.name = f"mcp_{server['id']}__{tool.name}"
         tool.description = f"External MCP service ({server['id']}): {tool.description}"
-        tool.permission = "confirm"
     return tools

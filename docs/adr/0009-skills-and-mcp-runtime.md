@@ -29,7 +29,9 @@ Decisions:
   key becomes the server id. Re-pasting the same URL refreshes that row instead of adding a
   duplicate, which is what happens after a token rotates.
 
-Consequences: The chat has actual import, connection, selection and removal controls; pasting
-a ModelScope config is one step instead of three fields. These are local single-user
-administration endpoints, not a multi-tenant deployment. stdio/SSE transports, binary skill
-files and automatic dependencies remain pending.
+Consequences: Registration is the opt-in. Because the product UI has no per-conversation
+picker, a run with no pinned list attaches every registered server, while a pinned server that
+is unregistered or unreachable fails the run and an auto-attached one that is offline is only
+skipped. The panel stays a debug surface behind `VITE_SHOW_SANDBOX_UI=true`. These are local
+single-user administration endpoints, not a multi-tenant deployment. stdio/SSE transports,
+binary skill files and automatic dependencies remain pending.

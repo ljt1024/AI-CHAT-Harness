@@ -154,8 +154,24 @@ own configured workspace, not the chat session's Docker workspace.
 The running local development MCP process uses the command above. The service must be
 restarted separately if stopped; stored registrations do not start remote processes.
 This implementation supports Streamable HTTP, not stdio or legacy SSE.
-All remote calls require approval, including reads. A timed-out remote operation can still
-have completed, so inspect external state before retrying.
+
+A remote tool's approval level comes from the service's own MCP annotation: a tool that
+declares `readOnlyHint=true` and not `destructiveHint=true` runs without asking, and
+everything else still parks on the approval card. A service that declares nothing is not
+assumed safe, and a tool's name is no evidence either - any server could expose something
+called `read_file`. Two escape hatches live in `config/intervention.yaml`: a `"mcp_*":
+confirm` line re-gates every remote call, and a per-tool entry such as
+`mcp_local__run_command: confirm` overrides one. Policy `deny` rules outrank all of this.
+
+Approving a remote tool also offers **Allow for this session**, which stops the same tool
+from asking again in that conversation. It is offered for MCP tools only: a host shell
+command can do something completely different next time. The grant lives in memory, is
+dropped when the session is deleted, and never survives a restart.
+
+A timed-out remote operation can still have completed, so inspect external state before
+retrying. A failed call reports the remote service's own first line of error (endpoint
+masked), because "Browser not installed" is something the agent can act on while "the call
+failed" is not.
 
 ### Hosted services and pasted configs
 
@@ -168,11 +184,25 @@ A hosted deployment such as ModelScope hands out a ready-made block:
 ```
 
 Paste it into **Skills & MCP → Paste an MCP config** and press **Import and connect**. The
-config key (`fetch`) becomes the server ID, the bearer token is folded into the stored record,
-and the server is selected for the next run. Only the `Authorization` header is honoured, and
-re-pasting the same URL updates that row instead of adding a duplicate, so a rotated token
-takes one paste. `POST /api/mcp/servers/import` with `{"config": "<the JSON text>"}` does the
-same from the command line. One server per paste; several entries are refused with a message.
+config key (`fetch`) becomes the server ID, the bearer token is folded into the stored record.
+A leading `mcp`/`mcp-` in that key is dropped, since tool names are already `mcp_<id>__<tool>`:
+`"MCP-AIFetcher"` registers as `aifetcher`, not `mcp_aifetcher`.
+Only the `Authorization` header is honoured, and re-pasting the same URL updates that row
+instead of adding a duplicate, so a rotated token takes one paste.
+`POST /api/mcp/servers/import` with `{"config": "<the JSON text>"}` does the same from the
+command line. One server per paste; several entries are refused with a message.
+
+**Registering is the opt-in.** The Skills & MCP panel is a debug surface, hidden in the product
+UI because MCP tools are meant to be used by the agent on its own; set
+`VITE_SHOW_SANDBOX_UI=true` to expose it. With no server pinned on an agent definition, every
+run attaches every registered server, so a service connected once is available in any later
+conversation without a per-run picker. Two consequences worth knowing:
+
+- A pinned list on a saved agent still wins, and a pinned server that is unregistered or
+  unreachable fails the run with 422/502 - the pin is a promise.
+- An auto-attached server that is merely offline is logged as `skipped` and the turn continues,
+  because every conversation paying for one broken registration would be worse. Set
+  `MCP_AUTO_ATTACH=false` to require explicit pins again.
 
 The token never leaves the backend: listings report `hasToken`, logs and error messages replace
 the tenant path segment with `****`, and a 401/403 during discovery is reported as a rejected
@@ -197,7 +227,8 @@ token. Discovery times out after `MCP_DISCOVER_TIMEOUT` (30 s) and calls after
 - `POST /api/mcp/servers/import`: register from a pasted `{"mcpServers": {...}}` block;
   422 carries the reason the config cannot be used.
 - `DELETE /api/mcp/servers/{id}`: remove; saved agent references prevent removal.
-- `POST /api/agents/run`: accepts `skills`, `mcp_servers`, and `sandbox`.
+- `POST /api/agents/run`: accepts `skills`, `mcp_servers`, and `sandbox`. `mcp_servers` is a
+  pin (must exist and answer); omitting it means every registered server is used.
 - `POST /api/agents`: saved definitions also accept `skills` and `mcp_servers`.
 
 The deployment is currently single-user and loopback-only. Skill import and MCP registration

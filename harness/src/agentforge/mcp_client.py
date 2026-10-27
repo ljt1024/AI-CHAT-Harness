@@ -21,6 +21,17 @@ def headers(token: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
+def reason(exc, url: str, limit: int = 240) -> str:
+    """The one line of a remote failure a caller can act on, endpoint masked.
+
+    Swallowing this is expensive: "Browser not installed" is actionable, while
+    "the call failed" leaves the model guessing and the run stuck.
+    """
+    text = describe(exc).replace(url, mask_url(url))
+    line = next((part.strip() for part in text.splitlines() if part.strip()), "")
+    return line[:limit]
+
+
 @asynccontextmanager
 async def connect(url: str, token: str | None = None, timeout: float | None = None):
     # trust_env stays off: a host-wide HTTP_PROXY breaks loopback and most
@@ -43,7 +54,16 @@ class MCPTool:
         self.token, self.timeout = token, timeout or DEFAULT_TIMEOUT
         self.description = definition.description or definition.name
         self.schema = definition.inputSchema
-        self.permission = "auto" if self.name in {"read_file", "grep", "glob"} else "confirm"
+        # The service describes what its own tool does; a read that cannot destroy
+        # anything does not need a human in the loop for every call. A server could
+        # lie, which is why the trust boundary is "you registered this server" and
+        # why `"mcp_*": confirm` in the policy overrides this for everyone at once.
+        # A tool that declares nothing is not assumed safe, and its name is no
+        # evidence: any server could call something `read_file`.
+        annotations = getattr(definition, "annotations", None)
+        self.read_only = bool(getattr(annotations, "readOnlyHint", False)) \
+            and not bool(getattr(annotations, "destructiveHint", False))
+        self.permission = "auto" if self.read_only else "confirm"
 
     async def execute(self, args: dict) -> ToolResult:
         try:
@@ -55,16 +75,18 @@ class MCPTool:
             if isinstance(structured, dict) and "ok" in structured:
                 return ToolResult.model_validate(structured)
             if result.isError:
-                logger.warning("mcp tool %s at %s returned an error", self.name, mask_url(self.url))
-            return ToolResult(ok=not result.isError, output=output,
-                              error="MCP tool failed. Inspect arguments and retry." if result.isError else None)
+                logger.warning("mcp tool %s at %s returned an error: %s", self.name,
+                               mask_url(self.url), bounded(output)[:240])
+                return ToolResult(ok=False, output=output,
+                                  error=f"MCP tool reported an error: {bounded(output)[:240]}")
+            return ToolResult(ok=True, output=output)
         except Exception as exc:
             # The remote side may have finished the work before the timeout, so
             # the message tells the caller to check state instead of retrying.
-            logger.warning("mcp tool %s at %s failed: %s", self.name, mask_url(self.url),
-                           describe(exc))
-            return ToolResult(ok=False, error="MCP call failed or timed out. Check the external service; "
-                "the remote operation may have completed, so verify its state before retrying.")
+            detail = reason(exc, self.url)
+            logger.warning("mcp tool %s at %s failed: %s", self.name, mask_url(self.url), detail)
+            return ToolResult(ok=False, error=f"MCP call failed: {detail}. Check the external "
+                "service; the remote operation may have completed, so verify its state before retrying.")
 
 
 async def discover_tools(url: str, token: str | None = None,

@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     # triggers it, so the two budgets are separate.
     mcp_discover_timeout: float = Field(default=30, ge=1, le=300)
     mcp_call_timeout: float = Field(default=60, ge=1, le=600)
+    # Registration is the opt-in for servers every run may use: there is no
+    # per-conversation picker in the product UI. An agent that pins an explicit
+    # list still wins, and a pinned server that is down fails the run while an
+    # auto-attached one is skipped.
+    mcp_auto_attach: bool = True
     agentforge_workspace: Path = Path("../.agentforge/workspaces")
     approval_timeout: float = 300
     intervention_policy: Path = Path("../config/intervention.yaml")

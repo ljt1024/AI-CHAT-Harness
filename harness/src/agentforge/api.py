@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, StrictBool
 from agentforge.config import Settings
 from agentforge.artifacts import ArtifactEventBus
 from agentforge.capabilities import (MCPServerRequest, MAX_CONFIG, parse_config,
-                                     public_server, server_tools)
+                                     public_server, run_servers, server_tools)
 from agentforge.context import ContextManager
 from agentforge.gateway.deepseek import DeepSeekAdapter
 from agentforge.gateway.base import ModelOutputError
@@ -67,6 +67,9 @@ class SessionRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     approved: StrictBool
     reason: str = Field(default="", max_length=2000)
+    # "Yes, and stop asking about this tool for the rest of this conversation."
+    # Ignored for tools the gate does not consider rememberable.
+    remember: bool = False
 
 
 class MCPConfig(BaseModel):
@@ -474,9 +477,20 @@ def create_app(settings=None, store=None, gateway=None):
             agent.system_prompt += "\n\nEnabled skills (scripts run only via sandbox commands; " \
                 "dependencies are not installed automatically):\n" + instructions
         remote = []
-        for identity in dict.fromkeys(agent.mcp_servers):
+        # Two ways a server joins a run. Pinning it on the agent is a promise:
+        # if it is gone or broken the run fails loudly. Otherwise the registry
+        # itself is the opt-in, so a server registered once is used by every run
+        # without the conversation having to pick it - the product UI has no
+        # per-run picker. Auto-attached servers that are merely offline are
+        # skipped instead of failing the whole turn.
+        selected, required = await run_servers(store, agent.mcp_servers,
+                                               settings.mcp_auto_attach)
+        for identity in selected:
+            strict = identity in required
             server = await store.get("mcp_servers", identity)
             if server is None:
+                if not strict:
+                    continue
                 raise HTTPException(422, f"MCP server is not registered: {identity}")
             try:
                 # Discovered again on every run rather than read from the stored
@@ -484,7 +498,10 @@ def create_app(settings=None, store=None, gateway=None):
                 discovered = await server_tools(server, settings.mcp_discover_timeout,
                                                 settings.mcp_call_timeout)
             except Exception as exc:
-                logger.warning("mcp server %s unavailable at run time: %s", identity, describe(exc))
+                logger.warning("mcp server %s unavailable at run time%s: %s", identity,
+                               "" if strict else " (skipped)", describe(exc))
+                if not strict:
+                    continue
                 if status_code(exc) in {401, 403}:
                     raise HTTPException(502, f"MCP server rejected the access token: {identity}") from None
                 raise HTTPException(502, f"MCP server unavailable: {identity}") from None
@@ -711,6 +728,7 @@ def create_app(settings=None, store=None, gateway=None):
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str):
         ready()
+        approvals.forget_session(session_id)
         entry = runs.get(session_id)
         if entry is not None:
             bus, running = entry
@@ -775,10 +793,10 @@ def create_app(settings=None, store=None, gateway=None):
     @app.post("/api/approvals/{call_id}")
     async def approve(call_id: str, request: ApprovalRequest):
         try:
-            approvals.resolve(call_id, request.approved, request.reason)
+            approvals.resolve(call_id, request.approved, request.reason, request.remember)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
-        return {"approved": request.approved}
+        return {"approved": request.approved, "remember": request.remember}
 
     @app.get("/api/traces/{session_id}")
     async def traces(session_id: str):

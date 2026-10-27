@@ -15,12 +15,23 @@ def test_mcp_url_rejects_unsupported_or_embedded_secrets(url):
         MCPServerRequest(id="local", url=url)
 
 
-async def test_namespaced_mcp_tools_always_require_approval(mcp_service):
+async def test_mcp_tools_keep_the_level_their_service_declares(mcp_service):
     url, _ = mcp_service
     tools = await server_tools({"id": "local", "url": url})
     assert all(tool.name.startswith("mcp_local__") for tool in tools)
+    # This server declares no annotations, so nothing it exposes is auto-approved:
+    # silence from the service is not evidence that a tool is a harmless read.
     assert all(tool.permission == "confirm" for tool in tools)
     assert next(tool for tool in tools if tool.name.endswith("__read_file")).remote_name == "read_file"
+
+
+def test_a_declared_read_only_tool_runs_without_a_gate():
+    definition = SimpleNamespace(name="fetch", description="read", inputSchema={},
+        annotations=SimpleNamespace(readOnlyHint=True, destructiveHint=False))
+    assert MCPTool("http://127.0.0.1:1/mcp", definition).permission == "auto"
+    destructive = SimpleNamespace(name="delete", description="write", inputSchema={},
+        annotations=SimpleNamespace(readOnlyHint=True, destructiveHint=True))
+    assert MCPTool("http://127.0.0.1:1/mcp", destructive).permission == "confirm"
 
 
 async def test_mcp_failure_returns_actionable_tool_error():

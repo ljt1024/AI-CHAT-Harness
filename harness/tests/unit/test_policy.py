@@ -84,6 +84,16 @@ def test_shipped_policy_describes_its_tools():
     assert loaded.decide("ask_user", {}).kind == "input"
 
 
+def test_shipped_policy_speaks_the_real_remote_tool_names():
+    """Remote tools are `mcp_<server>__<tool>`; `mcp:*` patterns never matched."""
+    loaded = InterventionPolicy.load("../config/intervention.yaml")
+    dead = [key for key in loaded.tools if key.startswith("mcp:")]
+    assert not dead, f"dead MCP patterns: {dead}"
+    # Registering a server is trust; the policy's escape hatch is a real glob.
+    strict = InterventionPolicy({"tools": {"mcp_*": "confirm"}})
+    assert strict.decide("mcp_fetch__fetch", {}, default_level="auto").level == "confirm"
+
+
 def test_missing_or_broken_policy_degrades_to_tool_defaults(tmp_path):
     assert InterventionPolicy.load(tmp_path / "nope.yaml").tools == {}
     broken = tmp_path / "broken.yaml"

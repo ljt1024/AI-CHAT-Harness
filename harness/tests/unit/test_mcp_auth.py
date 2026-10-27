@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from agentforge.capabilities import MCPServerRequest, parse_config, public_server
-from agentforge.mcp_client import MCPTool, discover_tools
+from agentforge.mcp_client import MCPTool, discover_tools, reason
 from agentforge.redact import describe, mask_url, status_code
 
 # The shape a ModelScope deployment returns: the tenant id lives in the path.
@@ -78,6 +78,24 @@ def test_an_unusable_pasted_config_says_why(config, message):
 def test_a_bare_server_object_still_gets_a_usable_id():
     assert parse_config(json.dumps({"url": PASTED_URL})).id == "mcp"
     assert parse_config(json.dumps({"mcpServers": {"My Fetch": {"url": PASTED_URL}}})).id == "my_fetch"
+
+
+def test_a_catalogue_key_does_not_repeat_the_runtime_prefix():
+    """Tool names are mcp_<id>__<tool>, so "MCP-AIFetcher" must not yield mcp_mcp_aifetcher__tool."""
+    assert parse_config(json.dumps({"mcpServers": {"MCP-AIFetcher": {"url": PASTED_URL}}})).id == "aifetcher"
+    # A key that *is* the prefix keeps it rather than losing the only name it has.
+    assert parse_config(json.dumps({"mcpServers": {"MCP": {"url": PASTED_URL}}})).id == "mcp"
+
+
+def test_a_remote_failure_keeps_its_actionable_first_line_and_loses_the_endpoint():
+    """A hosted tool said "Browser not installed"; the caller must see that, not "it failed"."""
+    class Browser(Exception):
+        pass
+
+    exc = Browser(f"Browser not installed. Launch at {HOSTED}\n  at second line")
+    text = reason(exc, HOSTED)
+    assert text == "Browser: Browser not installed. Launch at https://mcp.api-inference.modelscope.net/****/streamable_http"
+    assert "bf56fce2e65e40" not in text and "second line" not in text
 
 
 def test_a_rejected_config_reports_one_readable_sentence():
@@ -161,6 +179,42 @@ async def test_listing_hides_the_credential_from_the_browser(tmp_path):
     [server] = response.json()["data"]
     assert server["id"] == "amap" and server["hasToken"] is True
     assert "ms-secret" not in response.text and "bf56fce2e65e40" not in response.text
+
+
+async def test_registered_servers_are_used_without_picking_them_per_run(tmp_path, monkeypatch):
+    """There is no per-conversation picker, so registering has to be the opt-in.
+
+    A server that is down must not take the whole turn with it, while a server
+    an agent explicitly pinned must.
+    """
+    import httpx
+    from mongomock_motor import AsyncMongoMockClient
+
+    from agentforge.api import create_app
+    from agentforge.capabilities import run_servers
+    from agentforge.config import Settings
+    from agentforge.store import MongoDBStore
+
+    async def offline(url, token=None, timeout=None):
+        raise ConnectionRefusedError("nobody home")
+
+    store = MongoDBStore("", "test", client=AsyncMongoMockClient())
+    await store.put("mcp_servers", {"id": "offline", "url": "http://127.0.0.1:9/mcp", "tools": []})
+
+    assert await run_servers(store, []) == (["offline"], set())
+    assert await run_servers(store, ["offline"]) == (["offline"], {"offline"})
+    assert await run_servers(store, [], auto_attach=False) == ([], set())
+
+    monkeypatch.setattr("agentforge.capabilities.discover_tools", offline)
+    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0), store)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://test") as client:
+            skipped = await client.post("/api/agents", json={"name": "Auto", "tools": []})
+            pinned = await client.post("/api/agents",
+                                       json={"name": "Pinned", "tools": [], "mcp_servers": ["offline"]})
+    assert skipped.status_code == 201
+    assert pinned.status_code == 502 and "offline" in pinned.json()["detail"]
 
 
 async def test_discovery_needs_the_token_when_the_service_demands_one(tmp_path):

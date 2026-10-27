@@ -76,11 +76,16 @@ tools:
     timeout: 600
     on_timeout: skip
 
-  # ---------- remote tools: unknown code, so gate by default ----------
-  "mcp:*": confirm
-  "mcp:read_*": auto
-  "mcp:list_*": auto
-  "mcp:get_*": auto
+  # ---------- remote tools: the server's own MCP annotation decides ----------
+  # Tool names look like `mcp_fetch__fetch` (server id, double underscore, tool
+  # name), so patterns must use `_`, not `:`. A tool that declares
+  # readOnlyHint=true and not destructiveHint=true runs without asking; every
+  # other remote tool still asks. Override either way per tool, e.g.
+  #   mcp_local__run_command: confirm
+  #   mcp_fetch__fetch: auto
+  # Uncomment the next line to distrust every remote tool regardless of what it
+  # says about itself (rolling back to "approve every MCP call"):
+  # "mcp_*": confirm
 
 model_requests:
   enabled: true

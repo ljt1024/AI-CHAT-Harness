@@ -28,6 +28,16 @@ class ApprovalManager:
         # Request id -> "approve" or "input", so a reconnecting client can tell a
         # gate from a question.
         self.kinds: dict[str, str] = {}
+        # Request id -> tool name, so "allow this tool for the rest of the session"
+        # knows what it is granting without trusting the client.
+        self.tools: dict[str, str] = {}
+        # Request id -> may this grant be remembered at all? The server decides, so
+        # a client cannot ask for a session-wide pass on a host shell command.
+        self.grants: dict[str, bool] = {}
+        # Session -> tools a human already approved for every later call. Held in
+        # memory on purpose: a restart asks again rather than silently inheriting
+        # a blanket permission.
+        self.remembered: dict[str, set[str]] = {}
 
     def _workspace_root(self, tool):
         workspace = getattr(tool, "workspace", None)
@@ -82,6 +92,12 @@ class ApprovalManager:
             return False
         if decision.kind == "input":
             return await self._ask(agent, tool, call, emit, session_id, decision)
+        if session_id and tool.name in self.remembered.get(session_id, set()):
+            # The human already said "yes, this tool, this conversation". Denials
+            # and policy stops never reach here, so a grant cannot widen them.
+            logger.info("approval skipped session=%s tool=%s reason=remembered", session_id,
+                        tool.name)
+            return True
         return await self._confirm(tool, call, emit, session_id, decision)
 
     async def _ask(self, agent, tool, call, emit, session_id, decision):
@@ -135,16 +151,23 @@ class ApprovalManager:
         future = asyncio.get_running_loop().create_future()
         self.pending[identity] = future
         self.kinds[identity] = "approve"
+        self.tools[identity] = tool.name
         if session_id:
             self.owners[identity] = session_id
         record = {"id": identity, "tool_call_id": call.id, "tool": call.name,
                   "arguments": call.arguments, "status": "pending", "kind": "approve"}
+        # Only a remote service can be let off for the whole session: its calls are
+        # one bounded surface the human just looked at. A shell command or a file
+        # write can do something entirely different next time, so it keeps asking.
+        rememberable = getattr(tool, "source", "") == "mcp" and bool(session_id)
+        self.grants[identity] = rememberable
         if session_id:
             record["sessionId"] = session_id
         try:
             await self.store.put("approvals", record)
             await emit("await_approval", call_id=identity, tool_call_id=call.id,
-                       tool=call.name, arguments=call.arguments, reason=decision.reason)
+                       tool=call.name, arguments=call.arguments, reason=decision.reason,
+                       rememberable=rememberable)
             timeout = decision.timeout if decision.timeout is not None else self.timeout
             try:
                 approved, reason = await asyncio.wait_for(future, timeout)
@@ -160,11 +183,19 @@ class ApprovalManager:
             self.pending.pop(identity, None)
             self.owners.pop(identity, None)
             self.kinds.pop(identity, None)
+            self.tools.pop(identity, None)
+            self.grants.pop(identity, None)
 
-    def resolve(self, call_id: str, approved: bool, reason: str = ""):
+    def resolve(self, call_id: str, approved: bool, reason: str = "", remember: bool = False):
         future = self.pending.get(call_id)
         if future is None or future.done():
             raise ValueError("Approval is expired or already resolved.")
+        if remember and approved is True and self.grants.get(call_id):
+            session_id = self.owners.get(call_id)
+            tool_name = self.tools.get(call_id)
+            if session_id and tool_name:
+                self.remembered.setdefault(session_id, set()).add(tool_name)
+                logger.info("approval remembered session=%s tool=%s", session_id, tool_name)
         future.set_result((approved is True, reason))
 
     def pending_list(self):
@@ -186,3 +217,7 @@ class ApprovalManager:
             cancelled.append(identity)
         self.asked.pop(session_id, None)
         return cancelled
+
+    def forget_session(self, session_id: str):
+        """Session-scoped grants die with the session they were given to."""
+        return bool(self.remembered.pop(session_id, None))
