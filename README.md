@@ -421,7 +421,7 @@ AI-CHAT/
 │   │   ├── routes/            # HTTP 与 SSE 接口
 │   │   ├── config/            # 环境变量、内置与自定义模型
 │   │   └── i18n/              # 后端中英文文案
-│   ├── assets/fonts/          # PDF 中文字体
+│   ├── assets/fonts/          # PDF 中文字体（字体文件不纳入 Git，见该目录 README）
 │   ├── local_storage/         # 运行数据，不纳入 Git
 │   └── scripts/               # 后端验证脚本
 ├── scripts/                   # 国际化检查与浏览器验证脚本

@@ -33,5 +33,7 @@ out/
 
 # Local conversations, uploads, checkpoints and secrets
 end/local_storage/
+# 16 MB CJK font for the frozen reference backend; download per end/assets/fonts/README.md
+end/assets/fonts/*.otf
 # Agent working memory (never commit)
 .workbuddy/
