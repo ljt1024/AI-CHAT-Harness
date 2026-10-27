@@ -1,4 +1,9 @@
-from agentforge.context import ContextManager, estimate_tokens, history_boundary, truncate_tool_output
+import json
+
+import pytest
+
+from agentforge.context import (ContextManager, clip_summary, estimate_tokens, history_boundary,
+                                truncate_tool_output)
 from agentforge.gateway.base import ContentDelta, UsageReport
 from agentforge.models import Cost, ModelRef
 
@@ -75,3 +80,65 @@ def test_truncation_and_multilingual_estimate():
     assert len(truncate_tool_output("x" * 5000)) <= 4000
     assert "Truncated" in truncate_tool_output("x" * 5000)
     assert estimate_tokens([{"role": "user", "content": "中文"}]) > 2
+
+
+def test_clip_summary_keeps_a_clean_break_and_the_budget():
+    assert clip_summary("short", 100) == "short"
+    paragraph = "第一段讲目标和约束。" * 20 + "\n\n" + "第二段讲下一步。" * 20
+    clipped = clip_summary(paragraph, 150)
+    assert len(clipped) <= 150
+    # Ends on a real boundary instead of slicing a word in half.
+    assert clipped.endswith("。")
+
+
+def history_of(size: int) -> list[dict]:
+    messages = [{"role": "system", "content": "system"}]
+    for index in range(size):
+        messages += [{"role": "user", "content": "x" * 200},
+                     {"role": "assistant", "content": None, "tool_calls": [{"id": f"c{index}"}]},
+                     {"role": "tool", "tool_call_id": f"c{index}", "content": "result"}]
+    messages.append({"role": "user", "content": "continue"})
+    return messages
+
+
+async def test_an_over_long_summary_is_clipped_instead_of_failing_the_run():
+    """A real transcript was killed by 6016 characters against a 6000 budget."""
+    class Verbose:
+        async def chat(self, messages, tools, model_ref):
+            yield ContentDelta(text="要点。" * 200)
+
+    manager = ContextManager(window=1000, batch_chars=500, summary_chars=200)
+    result = await manager.prepare(history_of(6), Verbose(), ModelRef(), Cost())
+    prefix, body = result[1]["content"].split("\n", 1)
+    assert prefix == "Task state summary:" and len(body) <= 200 and body.endswith("。")
+
+
+async def test_an_empty_summary_retries_the_batch_in_halves():
+    class EmptyWhenLarge:
+        def __init__(self):
+            self.batches: list[int] = []
+
+        async def chat(self, messages, tools, model_ref):
+            batch = json.loads(messages[1]["content"])["historical_text"]
+            self.batches.append(len(batch))
+            if len(batch) > 400:
+                return
+            yield ContentDelta(text="部分摘要。")
+
+    summarizer = EmptyWhenLarge()
+    manager = ContextManager(window=1000, batch_chars=500, summary_chars=200)
+    result = await manager.prepare(history_of(6), summarizer, ModelRef(), Cost())
+    assert summarizer.batches[0] > 400
+    assert any(size <= 400 for size in summarizer.batches[1:])
+    assert "部分摘要" in result[1]["content"]
+
+
+async def test_a_model_that_never_summarises_says_what_to_do():
+    class Mute:
+        async def chat(self, messages, tools, model_ref):
+            return
+            yield  # pragma: no cover - an empty async generator
+
+    manager = ContextManager(window=1000, batch_chars=500, summary_chars=200)
+    with pytest.raises(ValueError, match="empty context summary"):
+        await manager.prepare(history_of(6), Mute(), ModelRef(), Cost())

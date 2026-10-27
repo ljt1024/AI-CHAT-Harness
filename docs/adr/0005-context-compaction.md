@@ -6,5 +6,6 @@ Decision: Summarize early history in bounded batches; preserve recent messages a
 Decision: Charge summary token usage to the same run and stop when its budget is exhausted.
 Alternative: Drop old messages or split arbitrary tool conversations; rejected as unsafe for continuity.
 Consequence: If recent context or a summary cannot fit safely, fail explicitly instead of dropping data.
+Consequence: A summary that overshoots its character budget is clipped at a sentence or paragraph break, not treated as a failed run - a live transcript was killed by 6016 characters against a 6000 budget, which no user can act on. An empty reply is retried against the two halves of that batch before the run gives up, and the final error names the cause instead of a batch size.
 Consequence: A compaction emits a `memory` event with the summarized and retained counts, so the transcript shown to the user says that older turns became a summary rather than silently changing what the model can see.
 Consequence: Each orderly stop commits the final window reading with the session document and serves it at `GET /api/sessions/{id}/context`, so a reloaded page restores the composer gauge without replaying the run's events.
