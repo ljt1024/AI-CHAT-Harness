@@ -34,6 +34,8 @@
   "cap.nameInvalid": "技能文件夹名称须以英文字母开头",
   "approval.title": "等待人工审批",
   "approval.allow": "批准执行",
+  "approval.allowSession": "本会话都允许",
+  "approval.allowSessionHint": "本次对话里这个远端工具不再逐次打断；拒绝规则与策略拦截仍然生效，新建或删除会话后失效。",
   "approval.deny": "拒绝执行",
   "approval.approved": "已批准",
   "approval.denied": "已拒绝",

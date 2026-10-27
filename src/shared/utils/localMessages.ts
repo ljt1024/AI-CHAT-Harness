@@ -19,6 +19,9 @@ export interface MessageApproval {
     status: 'pending' | 'approved' | 'denied' | 'closed';
     // "approve" gates an action; "input" collects information the model asked for.
     kind?: 'approve' | 'input';
+    // The gate offers "allow this tool for the rest of the session", which only a
+    // remote MCP tool qualifies for.
+    rememberable?: boolean;
 }
 
 export interface Message {

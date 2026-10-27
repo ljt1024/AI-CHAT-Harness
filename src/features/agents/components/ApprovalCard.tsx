@@ -9,6 +9,7 @@ export interface Approval {
   args: Record<string, unknown>;
   status: 'pending' | 'approved' | 'denied' | 'closed';
   kind?: 'approve' | 'input';
+  rememberable?: boolean;
 }
 
 function questionOf(args: Record<string, unknown>): string {
@@ -40,10 +41,10 @@ export function ApprovalCard({ approval, onStop, pendingCount = 1, autoFocus = f
   useEffect(() => {
     if (autoFocus && pending) panelRef.current?.focus();
   }, [autoFocus, pending, approval.id]);
-  const decide = async (approved: boolean, reason = '') => {
+  const decide = async (approved: boolean, reason = '', remember = false) => {
     if (busy || !pending) return;
     setBusy(true); setError('');
-    try { await resolveApproval(approval.id, approved, reason); }
+    try { await resolveApproval(approval.id, approved, reason, remember); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); setBusy(false); }
   };
   const title = t(!pending ? 'approval.record'
@@ -76,8 +77,12 @@ export function ApprovalCard({ approval, onStop, pendingCount = 1, autoFocus = f
     </div>}
     {pending && !asking && <div className="approval-actions">
       <button type="button" disabled={busy} onClick={() => void decide(false)}>{t('approval.deny')}</button>
+      {approval.rememberable && <button type="button" disabled={busy} title={t('approval.allowSessionHint')}
+        onClick={() => void decide(true, '', true)}>{t('approval.allowSession')}</button>}
       <button type="button" disabled={busy} onClick={() => void decide(true)}>{t('approval.allow')}</button>
     </div>}
+    {pending && !asking && approval.rememberable &&
+      <p className="approval-note">{t('approval.allowSessionHint')}</p>}
     {!pending && <p role="status">{t(asking
       ? (approval.status === 'approved' ? 'approval.answered' : 'approval.skipped')
       : approval.status === 'approved' ? 'approval.approved'

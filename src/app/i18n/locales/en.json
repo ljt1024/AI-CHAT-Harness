@@ -34,6 +34,8 @@
   "cap.nameInvalid": "Skill folder names must start with an English letter",
   "approval.title": "Approval required",
   "approval.allow": "Approve",
+  "approval.allowSession": "Allow for this session",
+  "approval.allowSessionHint": "Later calls to this remote tool in this conversation run without asking. Denials and policy blocks still apply, and the grant ends with the conversation.",
   "approval.deny": "Reject",
   "approval.approved": "Approved",
   "approval.denied": "Rejected",

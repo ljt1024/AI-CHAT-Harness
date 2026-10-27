@@ -37,6 +37,7 @@
 .approval-answer { width: 100%; margin-top: 10px; padding: 8px 10px; border: 1px solid #82918a; border-radius: 4px; background: var(--surface-color, #fff); color: var(--text-color, #20252b); font: inherit; font-size: 13px; resize: vertical; }
 .approval-answer:disabled { opacity: .6; }
 .approval-actions { display: flex; gap: 8px; }
+.approval-note { margin: 0; color: var(--text-muted-color); font-size: 12px; }
 .approval-actions button { padding: 8px 16px; border: 1px solid #82918a; border-radius: 4px; background: var(--surface-color, #fff); color: var(--text-color, #20252b); cursor: pointer; }
 .approval-actions button:last-child { background: #246448; color: white; }
 .approval-actions button:disabled { opacity: .6; cursor: wait; }

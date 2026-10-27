@@ -533,9 +533,10 @@ const ChatAI: React.FC = () => {
           // A gate asks for permission; a question asks for information. Both stop
           // the run, so both surface above the composer.
           const kind: MessageApproval['kind'] = event.type === 'await_input' ? 'input' : 'approve';
-          const record: MessageApproval = { id: event.call_id, tool: event.tool, args: event.arguments, status: 'pending', kind };
+          const rememberable = event.type === 'await_approval' && event.rememberable === true;
+          const record: MessageApproval = { id: event.call_id, tool: event.tool, args: event.arguments, status: 'pending', kind, rememberable };
           assistant.approvals = [...(assistant.approvals || []).filter(item => item.id !== record.id), record];
-          setApprovals(items => [...items, { sessionId, id: event.call_id, tool: event.tool, args: event.arguments, status: 'pending', kind }]);
+          setApprovals(items => [...items, { sessionId, id: event.call_id, tool: event.tool, args: event.arguments, status: 'pending', kind, rememberable }]);
           setPreviewSelection(previous => previous?.sessionId === sessionId ? null : previous);
         }
         if (event.type === 'approval_resolved') {
