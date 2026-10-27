@@ -6,11 +6,13 @@ import './CapabilitiesPanel.css';
 
 export interface CapabilitySelection { skills: string[]; mcp_servers: string[] }
 interface Skill { id: string; name: string; files: string[] }
-interface Server { id: string; url: string; tools: { name: string }[] }
+interface Server { id: string; url: string; hasToken: boolean; tools: { name: string }[] }
 const FILE_LIMIT = 1_000_000;
 const DOC_LIMIT = 24_000;
 const PACKAGE_LIMIT = 5_000_000;
 const FILE_COUNT = 100;
+// The block a hosted catalogue (ModelScope, Smithery) hands you to copy.
+const PASTE_EXAMPLE = '{"mcpServers": {"fetch": {"type": "streamable_http", "url": "https://host/mcp", "headers": {"Authorization": "Bearer <token>"}}}}';
 
 export function CapabilitiesPanel({ value, onChange, disabled, sandbox, onPrepareSandbox, loadedSkills, catalogVersion }: {
   value: CapabilitySelection; onChange: (value: CapabilitySelection) => void;
@@ -26,6 +28,8 @@ export function CapabilitiesPanel({ value, onChange, disabled, sandbox, onPrepar
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState('');
   const [url, setUrl] = useState('http://127.0.0.1:9000/mcp');
+  const [token, setToken] = useState('');
+  const [paste, setPaste] = useState('');
   const [pending, setPending] = useState<{ key: keyof CapabilitySelection; id: string; label: string } | null>(null);
   const read = async (response: Response) => {
     const body = await response.json();
@@ -64,11 +68,22 @@ export function CapabilitiesPanel({ value, onChange, disabled, sandbox, onPrepar
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   };
+  const importServer = async () => {
+    setBusy(true); setError('');
+    try {
+      const server = await read(await postJSON('/mcp/servers/import', { config: paste }, {}));
+      setPaste(''); await refresh();
+      // The paste was an intent to use it, so enable it in one step.
+      if (server?.id && !value.mcp_servers.includes(server.id))
+        onChange({ ...value, mcp_servers: [...value.mcp_servers, server.id] });
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setBusy(false); }
+  };
   const connect = async () => {
     setBusy(true); setError('');
     try {
-      await read(await postJSON('/mcp/servers', { id: name, url }, {}));
-      await refresh(); setName('');
+      await read(await postJSON('/mcp/servers', { id: name, url, token: token.trim() || undefined }, {}));
+      await refresh(); setName(''); setToken('');
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setBusy(false); }
   };
@@ -107,16 +122,25 @@ export function CapabilitiesPanel({ value, onChange, disabled, sandbox, onPrepar
       </fieldset>
       <fieldset disabled={disabled || busy}>
         <legend>{t('cap.mcp')}</legend>
+        <div className="cap-paste">
+          <label>{t('cap.pasteConfig')}
+            <textarea rows={3} spellCheck={false} value={paste} placeholder={PASTE_EXAMPLE}
+              onChange={event => setPaste(event.target.value)} />
+          </label>
+          <button type="button" disabled={!paste.trim()} onClick={() => void importServer()}>{t('cap.import')}</button>
+        </div>
         <div className="cap-connect">
           <label>{t('cap.serverId')}<input value={name} maxLength={20} onChange={e => setName(e.target.value)} /></label>
           <label>{t('cap.url')}<input type="url" value={url} onChange={e => setUrl(e.target.value)} /></label>
+          <label>{t('cap.token')}<input type="password" value={token} autoComplete="off"
+            placeholder={t('cap.tokenOptional')} onChange={e => setToken(e.target.value)} /></label>
           <button type="button" disabled={!name || !url} onClick={() => void connect()}>{t('cap.connect')}</button>
         </div>
         {!servers.length && <p>{t('cap.noServers')}</p>}
         {servers.map(server => <div className="cap-item" key={server.id}><label className="cap-row">
           <input type="checkbox" checked={value.mcp_servers.includes(server.id)}
             onChange={event => change('mcp_servers', server.id, event.target.checked)} />
-          <span>{server.id}<small>{server.url}</small><small>{server.tools.map(tool => tool.name).join(', ')}</small></span>
+          <span>{server.id}<small>{server.url}</small>{server.hasToken && <small role="status">{t('cap.tokenSaved')}</small>}<small>{server.tools.map(tool => tool.name).join(', ')}</small></span>
         </label><button type="button" onClick={() => askRemove('mcp_servers', server.id, server.id)}>{t('cap.remove')}</button></div>)}
       </fieldset>
     </div>

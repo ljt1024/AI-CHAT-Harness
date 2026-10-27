@@ -10,6 +10,10 @@
 .cap-row span { min-width: 0; overflow-wrap: anywhere; }
 .cap-row small { display: block; margin-top: 4px; opacity: .7; }
 .cap-connect { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.cap-paste { display: grid; gap: 6px; margin-bottom: 8px; }
+.cap-paste label { display: grid; gap: 4px; }
+.cap-paste textarea { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #9aa8b6; border-radius: 4px; background: var(--bg-primary, white); color: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; resize: vertical; }
+.cap-paste button { justify-self: start; padding: 8px; border: 1px solid #9aa8b6; border-radius: 4px; background: var(--bg-primary, white); color: inherit; cursor: pointer; }
 .cap-connect label { display: grid; gap: 4px; flex: 1 1 160px; min-width: 0; }
 .cap-connect input { width: 100%; box-sizing: border-box; }
 .cap-connect input, .cap-connect button { padding: 8px; border: 1px solid #9aa8b6; border-radius: 4px; background: var(--bg-primary, white); color: inherit; }
