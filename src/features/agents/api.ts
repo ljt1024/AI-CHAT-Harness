@@ -32,6 +32,8 @@ export interface AgentRequest {
   agentIds?: string[];
   model?: string;
   turnId?: string;
+  /** Continue the previous run from its latest checkpoint instead of opening a new turn. */
+  resume?: boolean;
 }
 
 export async function resolveApproval(id: string, approved: boolean, reason = ''): Promise<void> {

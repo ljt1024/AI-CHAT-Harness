@@ -68,6 +68,14 @@ const ChatAI: React.FC = () => {
   const { t } = useLanguage()
   const { messages } = useChat()
   const activeSessionId = getSelectId();
+  // The runtime measures the live transcript; keep it per session so switching
+  // conversations never shows another session's headroom.
+  const [contextUsage, setContextUsage] = useState<{ sessionId: string; tokens: number; window: number } | null>(null);
+  // Starting a new conversation clears the messages but keeps selectCovId pointing
+  // at the previous one until the first message is sent, so the session alone is
+  // not proof that this view owns the reading: require actual history too.
+  const activeContextUsage = contextUsage?.sessionId === activeSessionId && messages.length > 0
+    ? { tokens: contextUsage.tokens, window: contextUsage.window } : null;
   const sessionApprovals = approvals.filter(approval => approval.sessionId === activeSessionId);
   const pendingApprovals = sessionApprovals.filter(approval => approval.status === 'pending');
   const pendingApproval = pendingApprovals[0];
@@ -527,6 +535,7 @@ const ChatAI: React.FC = () => {
         }
         if (event.type === 'start') assistant.memoryMessages = event.memoryMessages
         if (event.type === 'memory') assistant.summarizedMessages = event.summarizedMessages
+        if (event.type === 'context') setContextUsage({ sessionId, tokens: event.contextTokens, window: event.contextWindow })
         if (event.type === 'preview') {
           const draft = event.preview;
           const first = !seenPreviews.has(draft.id);
@@ -740,6 +749,8 @@ const ChatAI: React.FC = () => {
                       variant="welcome"
                       inputText={inputText}
                       isLoading={isLoading}
+                      contextTokens={activeContextUsage?.tokens}
+                      contextWindow={activeContextUsage?.window}
                       supportsFileUpload={supportsFileUpload && (selectedModel?.supportsProviderFiles || !(isAgentMode && selectedModel?.supportsTools !== false))}
                       imageOnlyUpload={supportsImageUnderstanding}
                       imageAccept={selectedModel?.imageAccept}
@@ -797,6 +808,8 @@ const ChatAI: React.FC = () => {
                   <ChatInputControl
                   inputText={inputText}
                   isLoading={isLoading}
+                  contextTokens={activeContextUsage?.tokens}
+                  contextWindow={activeContextUsage?.window}
                   supportsFileUpload={supportsFileUpload && (selectedModel?.supportsProviderFiles || !(isAgentMode && selectedModel?.supportsTools !== false))}
                   imageOnlyUpload={supportsImageUnderstanding}
                       imageAccept={selectedModel?.imageAccept}

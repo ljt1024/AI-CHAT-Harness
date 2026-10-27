@@ -70,6 +70,7 @@ export type AgentEvent =
   | { type: 'approval_resolved'; call_id: string; approved: boolean; reason: string }
   | { type: 'start'; sessionId: string; memoryMessages: number }
   | { type: 'memory'; summarizedMessages: number; recentMessages: number }
+  | { type: 'context'; contextTokens: number; contextWindow: number }
   | { type: 'artifact'; artifact: AgentArtifact }
   | { type: 'preview'; preview: AgentPreview }
   | { type: 'step'; step: AgentStep }

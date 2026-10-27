@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from mongomock_motor import AsyncMongoMockClient
 
+from agentforge.context import DEFAULT_WINDOW, ContextManager
 from agentforge.events import EventBus
 from agentforge.gateway.base import ContentDelta, Done, ToolCallRequest, UsageReport
 from agentforge.gateway.registry import ModelGateway
@@ -102,6 +103,32 @@ async def test_resume_without_a_checkpoint_says_what_is_missing(tmp_path):
         await runtime.run(AgentDefinition(name="test"), "task", "empty", events, resume=True)
     error = [event for event in events.events if event["type"] == "error"][-1]
     assert error["message"] == "No matching checkpoint exists for this session."
+
+
+async def test_context_events_track_live_window_usage(tmp_path):
+    """The composer gauge reads these, so they measure the transcript, not the last request."""
+    runtime, _ = make_runtime(tmp_path, "max")
+    runtime.context_manager = ContextManager(window=1000)
+    agent = AgentDefinition(name="test", tools=["glob"], stop_conditions=StopConditions(max_turns=2))
+    events = EventBus()
+    await runtime.run(agent, "task", "gauged", events)
+    readings = [event for event in events.events if event["type"] == "context"]
+    assert readings, "the run published no context reading"
+    assert all(reading["contextWindow"] == 1000 for reading in readings)
+    tokens = [reading["contextTokens"] for reading in readings]
+    assert tokens == sorted(tokens)
+    assert tokens[0] > 0
+    # The last reading is published after the loop, so it includes the final answer.
+    assert len(tokens) >= 2
+
+
+async def test_context_events_fall_back_to_the_default_window(tmp_path):
+    runtime, _ = make_runtime(tmp_path, "done")
+    events = EventBus()
+    await runtime.run(AgentDefinition(name="test"), "task", "plain", events)
+    reading = [event for event in events.events if event["type"] == "context"][-1]
+    assert reading["contextWindow"] == DEFAULT_WINDOW
+    assert reading["contextTokens"] > 0
 
 
 async def test_current_tool_manifest_overrides_stale_history_without_accumulating(tmp_path):

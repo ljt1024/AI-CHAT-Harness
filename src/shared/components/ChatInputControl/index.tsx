@@ -3,6 +3,16 @@ import { useLanguage } from '@/app/providers/LanguageContext';
 import { useMessagePop } from '@/shared/components/MessagePop';
 import './index.css';
 
+const CONTEXT_RING_LENGTH = 2 * Math.PI * 7.5;
+
+/** Tokens are estimates, so thousands are enough precision — and both sides of the
+ *  ratio must use the same unit or the hint reads like a mismatch. */
+const formatContextTokens = (value: number, reference: number) => {
+  if (reference < 10000) return String(value);
+  const thousands = value / 1000;
+  return `${thousands >= 10 ? Math.round(thousands) : thousands.toFixed(1)}k`;
+};
+
 export interface UploadedFileItem {
   fileId: string;
   serverFileId?: string;
@@ -16,6 +26,10 @@ export interface UploadedFileItem {
 interface ChatInputControlProps {
   inputText: string;
   isLoading: boolean;
+  /** Token estimate for the live transcript, published by the runtime. */
+  contextTokens?: number;
+  /** Window the runtime compacts against; absent when the backend never reported it. */
+  contextWindow?: number;
   onInputChange: (value: string) => void;
   onSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
   onStopSSE: () => void;
@@ -38,6 +52,8 @@ interface ChatInputControlProps {
 const ChatInputControl: React.FC<ChatInputControlProps> = ({
   inputText,
   isLoading,
+  contextTokens,
+  contextWindow,
   onInputChange,
   onSubmit,
   onStopSSE,
@@ -88,6 +104,21 @@ const ChatInputControl: React.FC<ChatInputControlProps> = ({
     e.preventDefault()
     formRef.current?.requestSubmit()
   }
+
+  // The runtime compacts once the live transcript passes 70% of the window, so
+  // that is where the gauge stops informing and starts warning.
+  const contextPercent = contextWindow && contextTokens !== undefined
+    ? Math.min(100, Math.round((contextTokens / contextWindow) * 100)) : null;
+  const contextGauge = contextPercent !== null && contextTokens !== undefined && contextWindow
+    ? {
+      percent: contextPercent,
+      level: contextPercent >= 90 ? 'is-critical' : contextPercent >= 70 ? 'is-near' : '',
+      label: t('input.contextUsage', {
+        used: formatContextTokens(contextTokens, contextWindow),
+        total: formatContextTokens(contextWindow, contextWindow),
+        percent: contextPercent,
+      }),
+    } : null;
 
   return (
     <form
@@ -190,6 +221,26 @@ const ChatInputControl: React.FC<ChatInputControlProps> = ({
             )}
           </div>
           <div className="send-button-right">
+            {contextGauge && (
+              <span
+                className={`input-context ${contextGauge.level}`.trim()}
+                title={contextGauge.label}
+                aria-label={t('input.contextLabel')}
+                data-testid="context-gauge"
+              >
+                <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true">
+                  <circle className="input-context-track" cx="10" cy="10" r="7.5" />
+                  <circle
+                    className="input-context-fill"
+                    cx="10"
+                    cy="10"
+                    r="7.5"
+                    strokeDasharray={`${CONTEXT_RING_LENGTH * contextGauge.percent / 100} ${CONTEXT_RING_LENGTH}`}
+                  />
+                </svg>
+                <span className="input-context-value">{contextGauge.percent}%</span>
+              </span>
+            )}
             {
               !isLoading ?
                 <button

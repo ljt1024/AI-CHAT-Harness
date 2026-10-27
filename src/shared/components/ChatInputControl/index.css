@@ -61,6 +61,10 @@
   gap: 8px;
 }
 
+.send-button-right {
+  gap: 8px;
+}
+
 .input-send {
   width: 36px;
   height: 36px;
@@ -245,6 +249,65 @@
   white-space: nowrap;
 }
 
+.input-context {
+  height: 32px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--surface-elevated) 72%, transparent);
+  color: var(--text-muted-color);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  cursor: default;
+  user-select: none;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.input-context svg {
+  display: block;
+  transform: rotate(-90deg);
+}
+
+.input-context-track {
+  fill: none;
+  stroke: var(--border-color);
+  stroke-width: 2.5;
+}
+
+.input-context-fill {
+  fill: none;
+  stroke: var(--secondary-color);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.3s ease, stroke 0.3s ease;
+}
+
+.input-context-value {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.input-context.is-near {
+  color: var(--warning-color);
+  border-color: color-mix(in srgb, var(--warning-color) 38%, transparent);
+}
+
+.input-context.is-near .input-context-fill {
+  stroke: var(--warning-color);
+}
+
+.input-context.is-critical {
+  color: var(--danger-color);
+  border-color: color-mix(in srgb, var(--danger-color) 42%, transparent);
+}
+
+.input-context.is-critical .input-context-fill {
+  stroke: var(--danger-color);
+}
+
 .file-input-hidden {
   display: none;
 }
@@ -372,4 +435,6 @@
 @media (max-width: 768px) {
   .input-image-action .input-thinking-label, .input-agent-action .input-thinking-label { display: inline; font-size: 12px; }
   .send-button-left { flex-wrap: wrap; }
+  .input-context { padding: 0 8px; gap: 0; }
+  .input-context-value { display: none; }
 }

@@ -255,6 +255,8 @@
   "input.imageGeneration": "文生图",
   "input.imageHint": "使用 Qwen-Image-2.0 生成图片",
   "input.imagePrompt": "请使用 Qwen-Image-2.0 生成一张图片：",
+  "input.contextLabel": "上下文容量",
+  "input.contextUsage": "上下文已占用 {used} / {total} token（{percent}%），达到 70% 后会自动压缩较早对话",
   "preview.imageGenerating": "Qwen-Image-2.0 正在生成图片，完成后会自动展示。",
   "trace.calculate": "计算器",
   "trace.time": "时间查询",

@@ -4,12 +4,15 @@ from agentforge.models import Cost
 from agentforge.tools.base import bounded
 
 
+DEFAULT_WINDOW = 64000
+
+
 def estimate_tokens(messages: list[dict]) -> int:
     return (len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) + 2) // 3
 
 
 class ContextManager:
-    def __init__(self, window: int = 64000, batch_chars: int = 12000,
+    def __init__(self, window: int = DEFAULT_WINDOW, batch_chars: int = 12000,
                  summary_chars: int = 6000):
         self.window, self.batch_chars, self.summary_chars = window, batch_chars, summary_chars
 

@@ -4,7 +4,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 
-from agentforge.context import history_boundary
+from agentforge.context import DEFAULT_WINDOW, estimate_tokens, history_boundary
 from agentforge.events import EventBus
 from agentforge.gateway.registry import ModelGateway
 from agentforge.gateway.base import ModelOutputError
@@ -51,6 +51,12 @@ class Runtime:
         async def emit(kind, **data):
             await events.emit({"type": kind, "sessionId": session_id, "turnId": turn_id,
                                "trace_id": trace_id, **data})
+
+        async def emit_context():
+            # The UI shows how full the live transcript is. It is measured after the
+            # compact step, so what is displayed is what the next request will carry.
+            window = self.context_manager.window if self.context_manager else DEFAULT_WINDOW
+            await emit("context", contextTokens=estimate_tokens(messages), contextWindow=window)
 
         async def snapshot(index):
             await self.store.checkpoint(session_id, {
@@ -222,6 +228,7 @@ class Runtime:
                 if self.middleware:
                     await self.middleware.on_turn_end(ctx)
                     tool_count = ctx.tool_calls
+                await emit_context()
                 if (index + 1) % 5 == 0:
                     await snapshot(index + 1)
                 if cost.usd >= agent.stop_conditions.budget:
@@ -239,6 +246,9 @@ class Runtime:
                                output=output, stop_reason=reason, cost=cost)
             await self.store.put("traces", {"id": trace_id, "sessionId": session_id,
                                            "agent_id": agent.id, **result.model_dump()})
+            # The last turn ends the loop early when the model answers without tools,
+            # so publish one final reading that includes the answer itself.
+            await emit_context()
             # Every orderly ending commits what was learned, including budget, turn and
             # idle stops, so continuing the conversation does not start from nothing.
             # Crashes and cancellations leave history alone (ADR-0003); they resume from
