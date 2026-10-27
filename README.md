@@ -42,6 +42,11 @@ MONGODB_URI=mongodb://localhost:27017
 AGENTFORGE_DB=agentforge
 AGENTFORGE_WORKSPACE=.agentforge/workspaces
 MCP_SERVER_URL=http://localhost:9000/mcp
+# 可选：日志级别与格式（text/json），MCP 发现与调用超时（秒）
+AGENTFORGE_LOG_LEVEL=INFO
+AGENTFORGE_LOG_FORMAT=text
+MCP_DISCOVER_TIMEOUT=30
+MCP_CALL_TIMEOUT=60
 ```
 
 ### 4. 启动后端
@@ -112,6 +117,14 @@ scripts/audit-skills.sh [dir]                              # 安装前静态审�
 - 技能可从**公开 GitHub**（按 commit 固定）、**沙箱工作区**或**显式内联**导入；导入前校验、导入后按 SHA-256 同步进沙箱，`SKILL.md` 注入提示词。
 - 单文件上限 1 MB、整包 5 MB、100 个文件、`SKILL.md` 24 KB；安装过程不执行代码、不装依赖。
 - MCP 以无凭据环境启动并绑定独立工作区；外部调用一律需要审批。
+- MCP 支持可选访问令牌（Bearer header）：连接**魔搭托管 MCP** 时，在面板中填入服务 URL 与魔搭令牌即可；令牌只存后端，接口返回、日志、错误信息中一律脱敏（托管 URL 的租户段显示为 `****`）。发现超时 30s、调用超时 60s（`MCP_DISCOVER_TIMEOUT` / `MCP_CALL_TIMEOUT`），401/403 会明确提示令牌被拒。
+- 也可以直接粘贴平台给出的整段配置（`{"mcpServers": {"fetch": {"type": "streamable_http", "url": "...", "headers": {"Authorization": "Bearer ..."}}}}`）：服务标识取自配置里的键名，`headers` 只接受 `Authorization`，令牌折进同一条记录；同一 URL 重复粘贴是刷新而不是新增，适合令牌轮换。
+
+```bash
+# 等价的一次性导入（服务已在本机 9000 端口且要求 demo-token）
+curl -s localhost:8000/api/mcp/servers/import -H 'content-type: application/json' \
+  -d '{"config":"{\"mcpServers\":{\"local\":{\"type\":\"streamable_http\",\"url\":\"http://127.0.0.1:9000/mcp\",\"headers\":{\"Authorization\":\"Bearer demo-token\"}}}}"}'
+```
 
 ### 人工审批
 

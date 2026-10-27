@@ -8,7 +8,12 @@ from agentforge.tools.fs import FileTool, Workspace
 from agentforge.models import ToolResult
 from agentforge.tools.shell import ShellTool
 
-mcp = FastMCP("AgentForge tools", host="127.0.0.1", port=int(os.getenv("MCP_PORT", "9000")))
+PORT = int(os.getenv("MCP_PORT", "9000"))
+# Set to require a bearer token, which is how a ModelScope deployment made with
+# auth_check behaves. Unset, the URL alone is the credential.
+REQUIRE_TOKEN = os.getenv("MCP_REQUIRE_TOKEN", "")
+
+mcp = FastMCP("AgentForge tools", host="127.0.0.1", port=PORT)
 workspace = Workspace(Path(os.getenv("MCP_WORKSPACE", ".agentforge/mcp-workspace")))
 
 
@@ -49,4 +54,21 @@ async def run_command(command: str) -> ToolResult:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    if not REQUIRE_TOKEN:
+        mcp.run(transport="streamable-http")
+    else:
+        # Same transport, one extra gate in front of it, so a client that forgets
+        # the header fails here exactly as it would against a hosted service.
+        import uvicorn
+        from starlette.middleware.base import BaseHTTPMiddleware
+        from starlette.responses import JSONResponse
+
+        class RequireBearer(BaseHTTPMiddleware):
+            async def dispatch(self, request, call_next):
+                if request.headers.get("authorization") != f"Bearer {REQUIRE_TOKEN}":
+                    return JSONResponse({"error": "unauthorized"}, status_code=401)
+                return await call_next(request)
+
+        app = mcp.streamable_http_app()
+        app.add_middleware(RequireBearer)
+        uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

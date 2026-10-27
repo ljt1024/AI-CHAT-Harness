@@ -43,7 +43,7 @@ async def test_mcp_discovery_paginates_and_detects_repeated_cursors(monkeypatch,
             return SimpleNamespace(tools=[definition], nextCursor="page2" if cursor is None or repeated else None)
 
     @asynccontextmanager
-    async def fake_connect(url):
+    async def fake_connect(url, token=None, timeout=None):
         yield Session()
 
     monkeypatch.setattr("agentforge.mcp_client.connect", fake_connect)

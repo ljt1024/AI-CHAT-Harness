@@ -18,7 +18,18 @@ Decisions:
   The remote service owns its workspace and isolation; the local Docker policy does not apply.
 - Fail on discovery errors without builtin fallback. Bound call duration and surface unknown
   remote outcomes without automatic retries. No credentials are accepted in server URLs.
+- Accept one optional bearer token per server. The token is stored with the registration and
+  sent as an Authorization header; it never appears in a response, a log line or an error
+  message, and hosted URLs have their opaque tenant path segment masked in the same places.
+  Discovery and calls have separate generous timeouts, and an HTTP 401/403 during discovery
+  reports a rejected token rather than a generic failure.
+- Also accept the `{"mcpServers": {name: {...}}}` block that hosted catalogues hand out,
+  verbatim: `type`, `url` and `headers.Authorization: Bearer ...` are folded into one stored
+  token, and only that header is honoured so a config cannot smuggle others in. The catalogue
+  key becomes the server id. Re-pasting the same URL refreshes that row instead of adding a
+  duplicate, which is what happens after a token rotates.
 
-Consequences: The chat has actual import, connection, selection and removal controls.
-These are local single-user administration endpoints, not a multi-tenant deployment.
-Auth headers, stdio/SSE transports, binary skill files and automatic dependencies remain pending.
+Consequences: The chat has actual import, connection, selection and removal controls; pasting
+a ModelScope config is one step instead of three fields. These are local single-user
+administration endpoints, not a multi-tenant deployment. stdio/SSE transports, binary skill
+files and automatic dependencies remain pending.

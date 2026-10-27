@@ -15,13 +15,15 @@ from pydantic import BaseModel, Field, StrictBool
 
 from agentforge.config import Settings
 from agentforge.artifacts import ArtifactEventBus
-from agentforge.capabilities import MCPServerRequest, server_tools
+from agentforge.capabilities import (MCPServerRequest, MAX_CONFIG, parse_config,
+                                     public_server, server_tools)
 from agentforge.context import ContextManager
 from agentforge.gateway.deepseek import DeepSeekAdapter
 from agentforge.gateway.base import ModelOutputError
 from agentforge.gateway.registry import ModelGateway
 from agentforge.loop import Runtime
 from agentforge.logging_config import configure, request_id
+from agentforge.redact import describe, mask_url, status_code
 from agentforge.middleware import MiddlewareStack
 from agentforge.models import AgentDefinition, ModelRef, new_id
 from agentforge.permissions import ApprovalManager
@@ -65,6 +67,11 @@ class SessionRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     approved: StrictBool
     reason: str = Field(default="", max_length=2000)
+
+
+class MCPConfig(BaseModel):
+    """A pasted `{"mcpServers": {...}}` block, unparsed."""
+    config: str = Field(min_length=1, max_length=MAX_CONFIG)
 
 
 class SandboxFile(BaseModel):
@@ -359,20 +366,57 @@ def create_app(settings=None, store=None, gateway=None):
     @app.get("/api/mcp/servers")
     async def list_mcp_servers():
         ready()
-        return {"code": 200, "data": await store.list("mcp_servers")}
+        servers = await store.list("mcp_servers")
+        return {"code": 200, "data": [public_server(server) for server in servers]}
+
+    async def save_server(request: MCPServerRequest):
+        """Discover once and store. The token stays in the database: nothing
+        that leaves this endpoint contains it, and neither does anything printed."""
+        record = request.model_dump(exclude_none=True, exclude={"type", "headers"})
+        try:
+            tools = await server_tools(record, settings.mcp_discover_timeout,
+                                       settings.mcp_call_timeout)
+        except Exception as exc:
+            logger.warning("mcp discovery failed id=%s url=%s error=%s", request.id,
+                           mask_url(request.url), describe(exc))
+            if status_code(exc) in {401, 403}:
+                raise HTTPException(422, "MCP server rejected the access token. For a hosted "
+                    "service, supply the token from the same account that deployed it.") from None
+            raise HTTPException(502, "MCP discovery failed. Check the URL and the Streamable "
+                "HTTP transport.") from None
+        server = await store.put("mcp_servers", {**record, "tools": [
+            {"name": tool.name, "description": tool.description, "schema": tool.schema} for tool in tools]})
+        logger.info("mcp server registered id=%s tools=%d token=%s", request.id,
+                    len(tools), "yes" if record.get("token") else "no")
+        return public_server(server)
 
     @app.post("/api/mcp/servers", status_code=201)
     async def register_mcp_server(request: MCPServerRequest):
         ready()
         if await store.get("mcp_servers", request.id):
             raise HTTPException(409, "MCP server ID already exists.")
+        return {"code": 201, "data": await save_server(request)}
+
+    @app.post("/api/mcp/servers/import", status_code=201)
+    async def import_mcp_server(payload: MCPConfig):
+        """Accept the `mcpServers` block a catalogue gives you, verbatim."""
+        ready()
         try:
-            tools = await server_tools(request.model_dump())
-        except Exception:
-            raise HTTPException(502, "MCP discovery failed. Check the server URL and Streamable HTTP transport.") from None
-        server = await store.put("mcp_servers", {**request.model_dump(), "tools": [
-            {"name": tool.name, "description": tool.description, "schema": tool.schema} for tool in tools]})
-        return {"code": 201, "data": server}
+            request = parse_config(payload.config)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        # Re-pasting the same config with a new token refreshes that row: the
+        # URL identifies the service, so a second import must not duplicate it.
+        existing = next((server for server in await store.list("mcp_servers")
+                         if server["url"] == request.url), None)
+        if existing:
+            request.id = existing["id"]
+        else:
+            base, suffix = request.id, 1
+            while await store.get("mcp_servers", request.id):
+                suffix += 1
+                request.id = f"{base[:18].rstrip('_')}_{suffix}"
+        return {"code": 201, "data": await save_server(request)}
 
     @app.delete("/api/mcp/servers/{identity}")
     async def remove_mcp_server(identity: str):
@@ -380,6 +424,7 @@ def create_app(settings=None, store=None, gateway=None):
         if await store.list("agents", {"mcp_servers": identity}):
             raise HTTPException(409, "MCP server is referenced by a saved agent.")
         await store.db.mcp_servers.delete_one({"id": identity})
+        logger.info("mcp server removed id=%s", identity)
         return {"code": 200}
 
     async def prepare_agent(agent):
@@ -434,9 +479,17 @@ def create_app(settings=None, store=None, gateway=None):
             if server is None:
                 raise HTTPException(422, f"MCP server is not registered: {identity}")
             try:
-                remote.extend(await server_tools(server))
-            except Exception:
+                # Discovered again on every run rather than read from the stored
+                # snapshot: a hosted service can change its tools or expire.
+                discovered = await server_tools(server, settings.mcp_discover_timeout,
+                                                settings.mcp_call_timeout)
+            except Exception as exc:
+                logger.warning("mcp server %s unavailable at run time: %s", identity, describe(exc))
+                if status_code(exc) in {401, 403}:
+                    raise HTTPException(502, f"MCP server rejected the access token: {identity}") from None
                 raise HTTPException(502, f"MCP server unavailable: {identity}") from None
+            logger.info("mcp server %s contributed %d tools", identity, len(discovered))
+            remote.extend(discovered)
         agent.tools = list(dict.fromkeys([*agent.tools, *(tool.name for tool in remote)]))
         if len(agent.tools) > 128:
             raise HTTPException(422, "Enable fewer MCP servers; at most 128 tools per run are supported.")

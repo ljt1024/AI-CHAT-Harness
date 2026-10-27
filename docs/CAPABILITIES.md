@@ -153,9 +153,31 @@ own configured workspace, not the chat session's Docker workspace.
 
 The running local development MCP process uses the command above. The service must be
 restarted separately if stopped; stored registrations do not start remote processes.
-This implementation supports Streamable HTTP, not stdio, legacy SSE or authenticated servers.
+This implementation supports Streamable HTTP, not stdio or legacy SSE.
 All remote calls require approval, including reads. A timed-out remote operation can still
 have completed, so inspect external state before retrying.
+
+### Hosted services and pasted configs
+
+A hosted deployment such as ModelScope hands out a ready-made block:
+
+```json
+{"mcpServers": {"fetch": {"type": "streamable_http",
+  "url": "https://mcp.api-inference.modelscope.net/<tenant>/mcp",
+  "headers": {"Authorization": "Bearer <ModelScope token>"}}}}
+```
+
+Paste it into **Skills & MCP → Paste an MCP config** and press **Import and connect**. The
+config key (`fetch`) becomes the server ID, the bearer token is folded into the stored record,
+and the server is selected for the next run. Only the `Authorization` header is honoured, and
+re-pasting the same URL updates that row instead of adding a duplicate, so a rotated token
+takes one paste. `POST /api/mcp/servers/import` with `{"config": "<the JSON text>"}` does the
+same from the command line. One server per paste; several entries are refused with a message.
+
+The token never leaves the backend: listings report `hasToken`, logs and error messages replace
+the tenant path segment with `****`, and a 401/403 during discovery is reported as a rejected
+token. Discovery times out after `MCP_DISCOVER_TIMEOUT` (30 s) and calls after
+`MCP_CALL_TIMEOUT` (60 s); both are generous because hosted endpoints cold-start.
 
 ## API
 
@@ -171,7 +193,9 @@ have completed, so inspect external state before retrying.
 - `GET/POST /api/skills`: list/import `{name, files: {"SKILL.md": "...", ...}}`.
 - `DELETE /api/skills/{id}`: uninstall; 404 when the skill is not installed, 409 when a saved
   agent still references it, and synced `.skills/<id>` directories are removed from workspaces.
-- `GET/POST /api/mcp/servers`: list/register `{id, url}` and discover tools.
+- `GET/POST /api/mcp/servers`: list/register `{id, url, token?}` and discover tools.
+- `POST /api/mcp/servers/import`: register from a pasted `{"mcpServers": {...}}` block;
+  422 carries the reason the config cannot be used.
 - `DELETE /api/mcp/servers/{id}`: remove; saved agent references prevent removal.
 - `POST /api/agents/run`: accepts `skills`, `mcp_servers`, and `sandbox`.
 - `POST /api/agents`: saved definitions also accept `skills` and `mcp_servers`.

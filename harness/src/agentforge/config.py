@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     mongodb_uri: str = "mongodb://localhost:27017"
     agentforge_db: str = "agentforge"
     mcp_server_url: str = "http://localhost:9000/mcp"
+    # Hosted MCP services cold-start, and discovery blocks the request that
+    # triggers it, so the two budgets are separate.
+    mcp_discover_timeout: float = Field(default=30, ge=1, le=300)
+    mcp_call_timeout: float = Field(default=60, ge=1, le=600)
     agentforge_workspace: Path = Path("../.agentforge/workspaces")
     approval_timeout: float = 300
     intervention_policy: Path = Path("../config/intervention.yaml")
