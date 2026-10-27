@@ -72,11 +72,10 @@ export type AgentEvent =
   | { type: 'memory'; summarizedMessages: number; recentMessages: number }
   | { type: 'context'; contextTokens: number; contextWindow: number }
   | { type: 'artifact'; artifact: AgentArtifact }
-  | { type: 'preview'; preview: AgentPreview }
   | { type: 'step'; step: AgentStep }
-  | { type: 'step_delta'; stepId: string; text: string; reset?: boolean }
-  | { type: 'answer_start' }
   | { type: 'delta'; text: string }
+  | { type: 'reflection'; consecutive: number }
+  | { type: 'middleware_rejected'; message: string }
   | { type: 'done'; result: AgentResult }
   | { type: 'error'; message: string; requestId?: string };
 

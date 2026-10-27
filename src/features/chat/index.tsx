@@ -493,7 +493,6 @@ const ChatAI: React.FC = () => {
     const turnId = ensureAgentTurnId(userMessage)
     userMessage = { ...userMessage, agentTurnId: turnId }
     const model = { id: selectedModelId, name: selectedModelName }
-    const seenPreviews = new Set<string>();
     setLiveFiles({ sessionId, files: [] });
     const requestController = new AbortController()
     controllerRef.current = requestController
@@ -547,31 +546,13 @@ const ChatAI: React.FC = () => {
         if (event.type === 'start') assistant.memoryMessages = event.memoryMessages
         if (event.type === 'memory') assistant.summarizedMessages = event.summarizedMessages
         if (event.type === 'context') setContextUsage({ sessionId, tokens: event.contextTokens, window: event.contextWindow })
-        if (event.type === 'preview') {
-          const draft = event.preview;
-          const first = !seenPreviews.has(draft.id);
-          seenPreviews.add(draft.id);
-          const file: AgentArtifact = {
-            fileId: `draft:${draft.id}`, toolCallId: draft.toolCallId, format: draft.format, draft,
-            fileName: `${draft.title || t('preview.generatingName')}.${draft.format}`, mimeType: '', size: 0, downloadPath: '', createdAt: '',
-          };
-          setLiveFiles(previous => ({ sessionId, files: [...(previous.sessionId === sessionId ? previous.files : []).filter(item => item.fileId !== file.fileId), file] }));
-          const followingDraft = (previous: { sessionId: string; artifact: AgentArtifact } | null) => previous?.sessionId === sessionId && previous.artifact.fileId === file.fileId;
-          setPreviewSelection(previous => (first && canAutoOpenPreview()) || followingDraft(previous) ? { sessionId, artifact: file } : previous);
-        }
         if (event.type === 'artifact') {
           assistant.artifacts = [...(assistant.artifacts || []).filter((file) => file.fileId !== event.artifact.fileId), event.artifact]
           setLiveFiles(previous => ({ ...previous, files: previous.files.filter(file => !event.artifact.toolCallId || file.toolCallId !== event.artifact.toolCallId) }));
           const followingArtifact = (previous: { sessionId: string; artifact: AgentArtifact } | null) => previous?.sessionId === sessionId && previous.artifact.toolCallId === event.artifact.toolCallId;
-          setPreviewSelection(previous => followingArtifact(previous) || (seenPreviews.size === 0 && canAutoOpenPreview()) ? { sessionId, artifact: event.artifact } : previous);
+          setPreviewSelection(previous => followingArtifact(previous) || canAutoOpenPreview() ? { sessionId, artifact: event.artifact } : previous);
         }
-        if (event.type === 'answer_start') assistant.content = ''
         if (event.type === 'delta') assistant.content += event.text
-        if (event.type === 'step_delta') {
-          assistant.agentSteps = assistant.agentSteps?.map((step) => step.id === event.stepId
-            ? { ...step, outputTranslation: event.reset ? undefined : step.outputTranslation, output: (event.reset ? '' : step.output) + event.text }
-            : step)
-        }
         if (event.type === 'step') {
           const steps = assistant.agentSteps || []
           // A tool call arrives as an action step and its result reuses the same id

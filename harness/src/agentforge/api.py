@@ -100,25 +100,30 @@ def legacy_result(result, task):
             "artifacts": result.get("artifacts", [])}
 
 
+# Internal name -> name the browser receives. Kept as a table rather than scattered
+# reassignments so the mapping is checkable against WIRE_EVENTS (test_event_contract).
+LEGACY_EVENT_NAMES = {"turn_started": "start", "content": "delta", "tool_call": "step",
+                      "tool_result": "step", "model_recovery": "step"}
+
+
 def legacy_event(event, task):
     event = event.copy()
-    if event["type"] == "turn_started":
-        event["type"] = "start"
-    elif event["type"] == "content":
-        event["type"] = "delta"
-    elif event["type"] == "tool_call":
+    kind = event["type"]
+    event["type"] = LEGACY_EVENT_NAMES.get(kind, kind)
+    if kind == "tool_call":
         call = event["call"]
-        event.update(type="step", step={"id": call["id"], "toolCallId": call["id"], "phase": "action",
-            "status": "running", "agentId": call["name"], "output": f"{call['name']} {json.dumps(call['arguments'])}"})
-    elif event["type"] == "tool_result":
+        event["step"] = {"id": call["id"], "toolCallId": call["id"], "phase": "action",
+                         "status": "running", "agentId": call["name"],
+                         "output": f"{call['name']} {json.dumps(call['arguments'])}"}
+    elif kind == "tool_result":
         result = event["result"]
-        event.update(type="step", step={"id": event["call_id"], "toolCallId": event["call_id"],
-            "phase": "observation", "status": "completed" if result["ok"] else "failed",
-            "output": result["output"] or result["error"] or ""})
-    elif event["type"] == "model_recovery":
-        event.update(type="step", step={"id": event["step_id"], "phase": "thought",
-            "status": "completed", "output": event["message"]})
-    elif event["type"] == "done":
+        event["step"] = {"id": event["call_id"], "toolCallId": event["call_id"],
+                         "phase": "observation", "status": "completed" if result["ok"] else "failed",
+                         "output": result["output"] or result["error"] or ""}
+    elif kind == "model_recovery":
+        event["step"] = {"id": event["step_id"], "phase": "thought",
+                         "status": "completed", "output": event["message"]}
+    elif kind == "done":
         event["result"] = legacy_result(event["result"], task)
     return event
 
