@@ -70,6 +70,40 @@ async def test_session_concurrency_and_history(tmp_path):
     assert not runtime.active
 
 
+async def test_orderly_stops_commit_history_but_crashes_do_not(tmp_path):
+    """Budget, turn and idle stops are resumable context; a crash is not."""
+    runtime, _ = make_runtime(tmp_path, "budget")
+    agent = AgentDefinition(name="test", tools=["glob"], stop_conditions=StopConditions(max_turns=5))
+    result = await runtime.run(agent, "task", "budgeted", EventBus())
+    assert result.stop_reason == "budget"
+    history = (await runtime.store.get("sessions", "budgeted"))["history"]
+    assert any(m["role"] == "user" and m["content"] == "task" for m in history)
+    assert any(m["role"] == "tool" for m in history)
+    # The next turn must be able to continue from what was learned.
+    assert "lastTurnId" not in await runtime.store.get("sessions", "budgeted")
+
+    class Boom:
+        async def chat_stream(self, req):
+            raise RuntimeError("crash")
+            yield ContentDelta(text="unreachable")  # keeps this an async generator
+
+    crashed, _ = make_runtime(tmp_path, "done")
+    crashed.gateway.register("deepseek", Boom())
+    with pytest.raises(RuntimeError):
+        await crashed.run(AgentDefinition(name="test", tools=["glob"]), "task", "crashed", EventBus())
+    assert "history" not in await crashed.store.get("sessions", "crashed")
+
+
+async def test_resume_without_a_checkpoint_says_what_is_missing(tmp_path):
+    """The runtime raises these itself, so the user should get the reason, not a shrug."""
+    runtime, _ = make_runtime(tmp_path, "done")
+    events = EventBus()
+    with pytest.raises(ValueError):
+        await runtime.run(AgentDefinition(name="test"), "task", "empty", events, resume=True)
+    error = [event for event in events.events if event["type"] == "error"][-1]
+    assert error["message"] == "No matching checkpoint exists for this session."
+
+
 async def test_current_tool_manifest_overrides_stale_history_without_accumulating(tmp_path):
     requests = []
 

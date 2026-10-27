@@ -4,6 +4,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 
+from agentforge.context import history_boundary
 from agentforge.events import EventBus
 from agentforge.gateway.registry import ModelGateway
 from agentforge.gateway.base import ModelOutputError
@@ -104,7 +105,8 @@ class Runtime:
                                   metadata={"session_id": session_id})
                 if self.context_manager:
                     messages = await self.context_manager.prepare(
-                        messages, self.gateway, agent.model, cost, agent.stop_conditions.budget)
+                        messages, self.gateway, agent.model, cost, agent.stop_conditions.budget,
+                        emit=emit)
                     ctx.messages = messages
                 if cost.usd >= agent.stop_conditions.budget:
                     reason = "budget"
@@ -237,9 +239,16 @@ class Runtime:
                                output=output, stop_reason=reason, cost=cost)
             await self.store.put("traces", {"id": trace_id, "sessionId": session_id,
                                            "agent_id": agent.id, **result.model_dump()})
-            updated = {**session, "agent_id": agent.id, "turnId": turn_id, "status": reason}
+            # Every orderly ending commits what was learned, including budget, turn and
+            # idle stops, so continuing the conversation does not start from nothing.
+            # Crashes and cancellations leave history alone (ADR-0003); they resume from
+            # the latest checkpoint instead. The boundary keeps tool pairs intact when
+            # the last response was cut off mid-flight.
+            committed = messages[1:history_boundary(messages)]
+            updated = {**session, "agent_id": agent.id, "turnId": turn_id, "status": reason,
+                       "history": committed or session.get("history", [])}
             if reason == "completed":
-                updated.update(history=messages[1:], lastTurnId=turn_id)
+                updated["lastTurnId"] = turn_id
             await self.store.put("sessions", updated)
             await emit("done", result=result.model_dump())
             return result
@@ -261,6 +270,10 @@ class Runtime:
                     message = ("模型返回了不完整或无效的输出，已停止本次生成。本次不完整响应中的工具调用均未执行。请将任务拆分为较小文件后重试。"
                                if chinese else "The model returned incomplete or invalid output. No tools "
                                "from the incomplete response were executed. Retry with smaller files.")
+                elif isinstance(exc, ValueError):
+                    # The runtime raises these itself, so the text already says what to
+                    # do: wrong session, committed turn, no checkpoint to resume from.
+                    message = str(exc)
                 else:
                     message = ("执行失败，请重试；如仍失败，请提供执行记录编号以便排查。" if chinese
                                else "Run failed. Inspect the server logs and configuration.")

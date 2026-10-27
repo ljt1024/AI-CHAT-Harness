@@ -7,7 +7,7 @@ from agentforge.api import create_app
 from agentforge.config import Settings
 from agentforge.gateway.base import ContentDelta, Done, ToolCallRequest
 from agentforge.gateway.registry import ModelGateway
-from agentforge.models import ToolCall
+from agentforge.models import RunResult, ToolCall
 from agentforge.store import MongoDBStore
 
 
@@ -31,6 +31,36 @@ async def wait_until(predicate, timeout=5.0):
             return True
         await asyncio.sleep(0.01)
     return False
+
+
+async def test_run_endpoint_can_resume_from_a_checkpoint(tmp_path, monkeypatch):
+    """resume has to reach the runtime; before it did, checkpoint recovery was dead code."""
+    import agentforge.api as api
+
+    calls = []
+
+    async def fake_run(self, agent, task, session_id, events, turn_id=None, resume=False):
+        calls.append(resume)
+        result = RunResult(trace_id="t", session_id=session_id, turn_id=turn_id or "turn",
+                           output="resumed", stop_reason="completed")
+        await events.emit({"type": "done", "sessionId": session_id, "result": result.model_dump()})
+        return result
+
+    monkeypatch.setattr(api.Runtime, "run", fake_run)
+    gateway = ModelGateway()
+    gateway.register("deepseek", Answer())
+    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0),
+                     make_store(), gateway)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://test") as client:
+            for index, resume in enumerate((False, True)):
+                response = await client.post("/api/agents/run", json={
+                    "input": "continue please", "sessionId": f"s{index}", "resume": resume})
+                assert response.status_code == 200
+    # The task the runtime sees came from the checkpoint, so let the call settle.
+    await asyncio.sleep(0.05)
+    assert calls == [False, True]
 
 
 async def test_health_reports_every_dependency(tmp_path):

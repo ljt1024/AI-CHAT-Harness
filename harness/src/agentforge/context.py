@@ -9,10 +9,12 @@ def estimate_tokens(messages: list[dict]) -> int:
 
 
 class ContextManager:
-    def __init__(self, window: int = 64000, batch_chars: int = 12000, summary_chars: int = 6000):
+    def __init__(self, window: int = 64000, batch_chars: int = 12000,
+                 summary_chars: int = 6000):
         self.window, self.batch_chars, self.summary_chars = window, batch_chars, summary_chars
 
-    async def prepare(self, messages, gateway, model_ref, cost: Cost, budget: float = 0.5):
+    async def prepare(self, messages, gateway, model_ref, cost: Cost, budget: float = 0.5,
+                      emit=None):
         if estimate_tokens(messages) < self.window * 0.7:
             return messages
         # Cut only at a boundary where every assistant tool call has its tool response.
@@ -51,7 +53,31 @@ class ContextManager:
         compacted = [messages[0], {"role": "user", "content": f"Task state summary:\n{summary}"}, *messages[cut:]]
         if estimate_tokens(compacted) >= self.window * 0.7:
             raise ValueError("Recent context is too large. Narrow the request before continuing.")
+        if emit is not None:
+            # The UI shows how much was folded away; recent counts the summary itself.
+            await emit("memory", summarizedMessages=cut - 1,
+                       recentMessages=len(messages) - cut + 1)
         return compacted
+
+
+def history_boundary(messages: list[dict]) -> int:
+    """First index that ends a transcript without orphaning a tool call.
+
+    A run stopped by cancellation or an exception leaves an assistant tool call
+    whose result never arrived. Persisting that half-written pair would make the
+    next turn unreadable, so commit only up to the last complete pair.
+    """
+    pending, boundary = set(), 1
+    for index, message in enumerate(messages[1:], 1):
+        for call in message.get("tool_calls") or []:
+            identity = call.get("id") if isinstance(call, dict) else None
+            if identity:
+                pending.add(identity)
+        if message.get("role") == "tool":
+            pending.discard(message.get("tool_call_id"))
+        if not pending:
+            boundary = index + 1
+    return boundary
 
 
 truncate_tool_output = bounded

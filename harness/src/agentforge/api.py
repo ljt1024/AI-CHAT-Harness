@@ -44,6 +44,8 @@ class LegacyRequest(BaseModel):
     sessionId: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     turnId: str = Field(default_factory=new_id, pattern=r"^[a-zA-Z0-9_-]{1,128}$")
     stream: bool = False
+    # Continue the previous run from its latest checkpoint instead of a fresh turn.
+    resume: bool = False
     agentIds: list[str] = Field(default_factory=list, max_length=1)
     model: str = "deepseek-chat"
     fileIds: list[str] = Field(default_factory=list)
@@ -421,7 +423,7 @@ def create_app(settings=None, store=None, gateway=None):
             raise HTTPException(409, "Agent ID already exists.")
         return {"code": 201, "data": await store.put("agents", agent.model_dump())}
 
-    async def execute(agent, task, session_id, bus, turn_id, remote):
+    async def execute(agent, task, session_id, bus, turn_id, remote, resume=False):
         current_session.set(session_id)
         try:
             async with asyncio.timeout(900):
@@ -466,7 +468,7 @@ def create_app(settings=None, store=None, gateway=None):
                 isolated_tools[session_id] = registry
                 await store.put("sessions", {**(previous or {}), "id": session_id,
                     "sessionId": session_id, "isolated": isolated})
-                await runtime.run(agent, task, session_id, bus, turn_id=turn_id)
+                await runtime.run(agent, task, session_id, bus, turn_id=turn_id, resume=resume)
         except Exception:
             # exc_info matters here: the run is a background task, so without it a
             # failure is invisible and the user only sees a generic error event.
@@ -487,14 +489,14 @@ def create_app(settings=None, store=None, gateway=None):
                 run_sandboxes.pop(session_id, None)
                 await pool.release(session_id)
 
-    def start(agent, task, session_id, turn_id, remote=()):
+    def start(agent, task, session_id, turn_id, remote=(), resume=False):
         if session_id in runs and not runs[session_id][1].done():
             raise HTTPException(409, "Session already has an active run.")
         def workspace():
             sandbox = run_sandboxes.get(session_id)
             return sandbox.workspace if sandbox else Workspace(settings.agentforge_workspace / session_id)
         bus = ArtifactEventBus(runtime, store, workspace)
-        running = asyncio.create_task(execute(agent, task, session_id, bus, turn_id, remote))
+        running = asyncio.create_task(execute(agent, task, session_id, bus, turn_id, remote, resume))
         running.add_done_callback(lambda task: retire_run(session_id, task, bus))
         runs[session_id] = (bus, running)
         return bus, running
@@ -515,7 +517,8 @@ def create_app(settings=None, store=None, gateway=None):
             agent.sandbox_policy = SandboxPolicy() if request.sandbox else None
             agent.skills, agent.mcp_servers = request.skills, request.mcp_servers
         agent, remote = await prepare_agent(agent)
-        bus, running = start(agent, request.input, request.sessionId, request.turnId, remote)
+        bus, running = start(agent, request.input, request.sessionId, request.turnId, remote,
+                             request.resume)
         if not request.stream:
             await running
             final = bus.events[-1] if bus.events else None
