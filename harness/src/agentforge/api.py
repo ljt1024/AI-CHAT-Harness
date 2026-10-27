@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 import contextvars
 import json
 import logging
+import re
+import time
 from urllib.parse import quote
 
 import httpx
@@ -19,6 +21,7 @@ from agentforge.gateway.deepseek import DeepSeekAdapter
 from agentforge.gateway.base import ModelOutputError
 from agentforge.gateway.registry import ModelGateway
 from agentforge.loop import Runtime
+from agentforge.logging_config import configure, request_id
 from agentforge.middleware import MiddlewareStack
 from agentforge.models import AgentDefinition, ModelRef, new_id
 from agentforge.permissions import ApprovalManager
@@ -151,6 +154,7 @@ async def event_frames(bus, task="", legacy=False, after=0):
 
 def create_app(settings=None, store=None, gateway=None):
     settings = settings or Settings()
+    configure()
     store = store if store is not None else MongoDBStore(settings.mongodb_uri, settings.agentforge_db)
     gateway = gateway or ModelGateway()
     if "deepseek" not in gateway.adapters:
@@ -245,6 +249,33 @@ def create_app(settings=None, store=None, gateway=None):
     app.state.sandbox_pool = pool
     # Exposed so operators (and the runtime status endpoint) can inspect what is running.
     app.state.runs, app.state.finished_runs = runs, finished_runs
+
+    @app.middleware("http")
+    async def log_request(request, call_next):
+        # The id is echoed in the response header so a user reporting a problem
+        # can quote one value and have every related record filtered out. It is
+        # honoured when a caller supplies its own, so a browser trace and the
+        # server log can share it.
+        supplied = request.headers.get("X-Request-Id", "").strip()
+        rid = supplied if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", supplied) else new_id()[:12]
+        token = request_id.set(rid)
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            logger.exception("%s %s failed after %.0fms", request.method, request.url.path,
+                             (time.perf_counter() - started) * 1000)
+            raise
+        else:
+            elapsed = (time.perf_counter() - started) * 1000
+            response.headers["X-Request-Id"] = rid
+            # Health is polled constantly and says nothing on success.
+            emit_log = logger.debug if request.url.path == "/health" else logger.info
+            emit_log("%s %s -> %s %.0fms", request.method, request.url.path,
+                     response.status_code, elapsed)
+            return response
+        finally:
+            request_id.reset(token)
 
     def ready(model=False):
         if not app.state.ready:

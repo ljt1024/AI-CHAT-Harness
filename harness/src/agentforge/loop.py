@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 
 from agentforge.context import DEFAULT_WINDOW, estimate_tokens, history_boundary
@@ -45,6 +46,7 @@ class Runtime:
             raise SessionBusy("Session already has an active run.")
         self.active.add(session_id)
         trace_id, turn_id = new_id(), turn_id or new_id()
+        started_at = time.perf_counter()
         messages, cost, start = [], Cost(), 0
         output, reason = "", "max_turns"
 
@@ -105,6 +107,8 @@ class Runtime:
             await self.store.put("sessions", {**session, "agent_id": agent.id, "turnId": turn_id,
                                                "status": "running"})
             await emit("turn_started", memoryMessages=len(messages))
+            logger.info("run started session=%s agent=%s trace=%s turn=%s messages=%d tools=%d resume=%s",
+                        session_id, agent.id, trace_id, turn_id, len(messages), len(agent.tools), resume)
             for index in range(start, agent.stop_conditions.max_turns):
                 if cost.usd >= agent.stop_conditions.budget:
                     reason = "budget"
@@ -207,10 +211,21 @@ class Runtime:
                             agent, tools.tools[call.name], call, emit)
                         if self.permission_check is None:
                             permitted = tools.tools[call.name].permission == "auto"
-                        result = await tools.execute(call.name, call.arguments) if permitted else ToolResult(
-                            ok=False, error="Permission denied. This action was not executed. Do not repeat the "
-                            "denied action unless the user changes their decision; use a read-only alternative "
-                            "or report the blocker.")
+                        if not permitted:
+                            result = ToolResult(
+                                ok=False, error="Permission denied. This action was not executed. Do not repeat the "
+                                "denied action unless the user changes their decision; use a read-only alternative "
+                                "or report the blocker.")
+                            logger.info("tool denied session=%s trace=%s index=%d name=%s",
+                                        session_id, trace_id, index, call.name)
+                        else:
+                            tool_started = time.perf_counter()
+                            result = await tools.execute(call.name, call.arguments)
+                            # Arguments and output are deliberately absent: they
+                            # carry user data and can carry credentials.
+                            logger.info("tool session=%s trace=%s index=%d name=%s ok=%s %.0fms",
+                                        session_id, trace_id, index, call.name, result.ok,
+                                        (time.perf_counter() - tool_started) * 1000)
                     if self.middleware:
                         result = await self.middleware.on_tool_result(ctx, result)
                     await self.store.put("tool_calls", {"id": f"{trace_id}:{index}:{call.id}",
@@ -264,10 +279,20 @@ class Runtime:
             if reason == "completed":
                 updated["lastTurnId"] = turn_id
             await self.store.put("sessions", updated)
+            logger.info("run finished session=%s trace=%s stop=%s turns=%d usd=%.4f tokens=%d/%d %.0fms",
+                        session_id, trace_id, reason, index + 1, cost.usd, cost.tokens_in,
+                        cost.tokens_out, (time.perf_counter() - started_at) * 1000)
             await emit("done", result=result.model_dump())
             return result
         except BaseException as exc:
             if isinstance(exc, (Exception, asyncio.CancelledError)):
+                # A ValueError is the runtime's own refusal and a cancellation is
+                # a normal stop, so neither deserves a traceback; anything else is
+                # a bug and does.
+                expected = isinstance(exc, (ValueError, ModelOutputError, asyncio.CancelledError))
+                logger.log(logging.INFO if isinstance(exc, asyncio.CancelledError) else logging.WARNING,
+                           "run stopped session=%s trace=%s error=%s: %s", session_id, trace_id,
+                           type(exc).__name__, exc, exc_info=not expected)
                 if type(exc).__name__ == "MiddlewareRejected":
                     await emit("middleware_rejected", message=str(exc))
                 if self.middleware and ctx:

@@ -1,7 +1,10 @@
 import json
+import logging
 
 from agentforge.models import Cost
 from agentforge.tools.base import bounded
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_WINDOW = 64000
@@ -60,6 +63,11 @@ class ContextManager:
             # The UI shows how much was folded away; recent counts the summary itself.
             await emit("memory", summarizedMessages=cut - 1,
                        recentMessages=len(messages) - cut + 1)
+        # Compaction changes what the model can see, so a run's behaviour only
+        # makes sense alongside it.
+        logger.info("context compacted messages=%d summarised=%d recent=%d tokens=%d/%d",
+                    len(messages), cut - 1, len(messages) - cut + 1,
+                    estimate_tokens(compacted), self.window)
         return compacted
 
 

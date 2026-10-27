@@ -1,9 +1,12 @@
 import asyncio
 from contextvars import ContextVar
+import logging
 
 from agentforge.models import new_id
 from agentforge.policy import LEVELS, Decision, InterventionPolicy
 from agentforge.sandbox.tools import SandboxTool
+
+logger = logging.getLogger(__name__)
 
 CANCEL_REASON = "Approval cancelled: the run was stopped."
 
@@ -53,6 +56,10 @@ class ApprovalManager:
         level = decision.level
         if level == "auto":
             return True
+        # Every gate is worth one line: it explains why a run paused, and a
+        # silent "auto" is the difference between a stuck run and a fast one.
+        logger.info("permission session=%s tool=%s level=%s kind=%s reason=%s", session_id,
+                    tool.name, level, decision.kind, decision.reason)
         if level == "rule":
             # Trust the real Docker isolation boundary, not command-text heuristics.
             # Host shell, installers and remote MCP tools never enter this rule.
@@ -112,6 +119,7 @@ class ApprovalManager:
             except TimeoutError:
                 answered, answer = False, ""
             current_answer.set(answer if answered and answer else "")
+            logger.info("input session=%s tool=%s answered=%s", session_id, tool.name, answered)
             await self.store.put("approvals", {**record,
                 "status": "answered" if answered else "skipped", "reason": answer})
             await emit("approval_resolved", call_id=identity, approved=answered, reason=answer)
@@ -142,6 +150,8 @@ class ApprovalManager:
                 approved, reason = await asyncio.wait_for(future, timeout)
             except TimeoutError:
                 approved, reason = False, "Approval timed out; denied by default."
+            logger.info("approval session=%s tool=%s approved=%s reason=%s", session_id,
+                        tool.name, approved, reason)
             await self.store.put("approvals", {**record,
                 "status": "approved" if approved else "denied", "reason": reason})
             await emit("approval_resolved", call_id=identity, approved=approved, reason=reason)
