@@ -131,6 +131,18 @@ async def test_context_events_fall_back_to_the_default_window(tmp_path):
     assert reading["contextTokens"] > 0
 
 
+async def test_last_context_reading_is_committed_with_the_transcript(tmp_path):
+    """A refreshed page has no event stream, so the reading has to outlive the run."""
+    runtime, _ = make_runtime(tmp_path, "done")
+    runtime.context_manager = ContextManager(window=1000)
+    events = EventBus()
+    await runtime.run(AgentDefinition(name="test"), "task", "remembered", events)
+    published = [event for event in events.events if event["type"] == "context"][-1]
+    saved = (await runtime.store.get("sessions", "remembered"))["context"]
+    # Same numbers as the final event: the gauge must not change on reload.
+    assert saved == {"tokens": published["contextTokens"], "window": 1000}
+
+
 async def test_current_tool_manifest_overrides_stale_history_without_accumulating(tmp_path):
     requests = []
 

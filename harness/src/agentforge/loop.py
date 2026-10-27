@@ -56,7 +56,9 @@ class Runtime:
             # The UI shows how full the live transcript is. It is measured after the
             # compact step, so what is displayed is what the next request will carry.
             window = self.context_manager.window if self.context_manager else DEFAULT_WINDOW
-            await emit("context", contextTokens=estimate_tokens(messages), contextWindow=window)
+            reading = {"tokens": estimate_tokens(messages), "window": window}
+            await emit("context", contextTokens=reading["tokens"], contextWindow=window)
+            return reading
 
         async def snapshot(index):
             await self.store.checkpoint(session_id, {
@@ -248,15 +250,17 @@ class Runtime:
                                            "agent_id": agent.id, **result.model_dump()})
             # The last turn ends the loop early when the model answers without tools,
             # so publish one final reading that includes the answer itself.
-            await emit_context()
+            reading = await emit_context()
             # Every orderly ending commits what was learned, including budget, turn and
             # idle stops, so continuing the conversation does not start from nothing.
             # Crashes and cancellations leave history alone (ADR-0003); they resume from
             # the latest checkpoint instead. The boundary keeps tool pairs intact when
             # the last response was cut off mid-flight.
             committed = messages[1:history_boundary(messages)]
+            # The reading is persisted with the transcript it describes: a refreshed page
+            # has no event stream to replay, so this is where the composer gauge refills.
             updated = {**session, "agent_id": agent.id, "turnId": turn_id, "status": reason,
-                       "history": committed or session.get("history", [])}
+                       "history": committed or session.get("history", []), "context": reading}
             if reason == "completed":
                 updated["lastTurnId"] = turn_id
             await self.store.put("sessions", updated)

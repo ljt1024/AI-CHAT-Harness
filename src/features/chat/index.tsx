@@ -15,7 +15,7 @@ import { SSEData } from './types';
 import { useChatModels } from './hooks/useChatModels';
 import { useFileUpload } from './hooks/useFileUpload';
 import { useStickToBottom } from './hooks/useStickToBottom';
-import { streamAgents, stopSession } from '@/features/agents/api';
+import { streamAgents, stopSession, fetchSessionContext } from '@/features/agents/api';
 import { ApprovalCard, type Approval } from '@/features/agents/components/ApprovalCard';
 import type { MessageApproval } from '@/shared/utils/localMessages';
 import { CapabilitiesPanel, type CapabilitySelection } from '@/features/agents/components/CapabilitiesPanel';
@@ -76,6 +76,7 @@ const ChatAI: React.FC = () => {
   // not proof that this view owns the reading: require actual history too.
   const activeContextUsage = contextUsage?.sessionId === activeSessionId && messages.length > 0
     ? { tokens: contextUsage.tokens, window: contextUsage.window } : null;
+  const measuredSessionId = contextUsage?.sessionId;
   const sessionApprovals = approvals.filter(approval => approval.sessionId === activeSessionId);
   const pendingApprovals = sessionApprovals.filter(approval => approval.status === 'pending');
   const pendingApproval = pendingApprovals[0];
@@ -113,6 +114,16 @@ const ChatAI: React.FC = () => {
       setLoadedSkills(Array.isArray(loaded) ? loaded : []);
     } catch { setCapabilities({ skills: [], mcp_servers: [] }); setLoadedSkills([]); }
   }, [activeSessionId, isNewConversation]);
+  // A reload drops the in-memory reading but not the run, so ask the backend for the
+  // one it committed; otherwise the gauge stays empty until the next message.
+  useEffect(() => {
+    if (!activeSessionId || !messages.length || measuredSessionId === activeSessionId) return;
+    const controller = new AbortController();
+    void fetchSessionContext(activeSessionId, controller.signal).then(saved => {
+      if (saved) setContextUsage({ sessionId: activeSessionId, ...saved });
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [activeSessionId, messages.length, measuredSessionId]);
   const hasSelectedConversation = Boolean(getSelectId())
   const isWelcomeConversation = messages.length === 0 && (isNewConversation || !hasSelectedConversation)
   const selectedConversation = useMemo(() => {

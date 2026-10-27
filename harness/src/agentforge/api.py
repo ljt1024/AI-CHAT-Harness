@@ -578,6 +578,16 @@ def create_app(settings=None, store=None, gateway=None):
         bus, running = entry
         return bus, running.done()
 
+    @app.get("/api/sessions/{session_id}/context")
+    async def session_context(session_id: str):
+        # The gauge reads this after a reload: the run's context events are gone, but
+        # the last measurement was committed with the transcript it describes.
+        ready()
+        session = await store.get("sessions", session_id)
+        if session is None:
+            raise HTTPException(404, "Session not found.")
+        return {"code": 200, "data": session.get("context")}
+
     @app.get("/api/sessions")
     async def list_sessions():
         ready()

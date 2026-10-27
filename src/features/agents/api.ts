@@ -57,6 +57,25 @@ export async function stopSession(sessionId: string): Promise<void> {
   if (!response.ok) throw await readError(response);
 }
 
+export interface SessionContext {
+  tokens: number;
+  window: number;
+}
+
+/**
+ * The last measurement a finished run committed with the transcript. A reload has no
+ * event stream to replay, so this is how the composer gauge refills.
+ */
+export async function fetchSessionContext(sessionId: string,
+  signal?: AbortSignal): Promise<SessionContext | null> {
+  const response = await fetch(apiUrl(`/sessions/${encodeURIComponent(sessionId)}/context`), {
+    signal, headers: languageHeaders(),
+  });
+  if (!response.ok) return null;
+  const data = (await response.json())?.data;
+  return typeof data?.tokens === 'number' && typeof data?.window === 'number' ? data : null;
+}
+
 export async function streamAgents(request: AgentRequest, onEvent: (event: AgentEvent) => void, signal?: AbortSignal): Promise<void> {
   const response = await postJSON('/agents/run', { ...request, stream: true },
     { ...languageHeaders(), Accept: 'text/event-stream' }, signal);

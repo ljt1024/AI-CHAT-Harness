@@ -119,6 +119,25 @@ async def test_session_can_be_stopped_and_pending_approval_released(tmp_path):
             assert session_id in app.state.finished_runs
 
 
+async def test_session_context_reads_the_committed_reading(tmp_path):
+    """The composer gauge asks for this after a reload instead of waiting for a run."""
+    store = make_store()
+    gateway = ModelGateway()
+    gateway.register("deepseek", Answer())
+    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0),
+                     store, gateway)
+    async with app.router.lifespan_context(app):
+        await store.put("sessions", {"id": "kept", "sessionId": "kept",
+                                     "context": {"tokens": 1234, "window": 64000}})
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            assert (await client.get("/api/sessions/kept/context")).json()["data"] == \
+                {"tokens": 1234, "window": 64000}
+            # A session that never ran has no reading; the caller hides the gauge.
+            await store.put("sessions", {"id": "fresh", "sessionId": "fresh"})
+            assert (await client.get("/api/sessions/fresh/context")).json()["data"] is None
+            assert (await client.get("/api/sessions/absent/context")).status_code == 404
+
+
 async def test_stopping_unknown_session_is_404(tmp_path):
     gateway = ModelGateway()
     gateway.register("deepseek", Answer())
