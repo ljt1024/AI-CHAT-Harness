@@ -25,10 +25,16 @@ function statusKey(item: MessageApproval) {
  */
 export function ApprovalHistory({ approvals }: { approvals: MessageApproval[] }) {
   const { t } = useLanguage();
+  // A question was answered, not approved: counting it as an approval would make
+  // the audit trail say the human permitted something they merely answered.
   const resolved = approvals.filter((item): item is ResolvedApproval => item.status !== 'pending');
   if (!resolved.length) return null;
-  const approved = resolved.filter(item => item.status === 'approved').length;
-  const denied = resolved.filter(item => item.status === 'denied').length;
+  const gates = resolved.filter(item => item.kind !== 'input');
+  const questions = resolved.filter(item => item.kind === 'input');
+  const approved = gates.filter(item => item.status === 'approved').length;
+  const denied = gates.filter(item => item.status === 'denied').length;
+  const answered = questions.filter(item => item.status === 'approved').length;
+  const skipped = questions.filter(item => item.status === 'denied').length;
   return <details className="approval-record">
     <summary>
       <span className="approval-record-title">{t('approval.record')}</span>
@@ -36,6 +42,8 @@ export function ApprovalHistory({ approvals }: { approvals: MessageApproval[] })
         <span>{t('approval.recordCount', { count: resolved.length })}</span>
         {approved > 0 && <em className="approved">{t('approval.approved')} {approved}</em>}
         {denied > 0 && <em className="denied">{t('approval.denied')} {denied}</em>}
+        {answered > 0 && <em className="approved">{t('approval.answered')} {answered}</em>}
+        {skipped > 0 && <em className="denied">{t('approval.skipped')} {skipped}</em>}
       </span>
     </summary>
     <ul className="approval-record-list">

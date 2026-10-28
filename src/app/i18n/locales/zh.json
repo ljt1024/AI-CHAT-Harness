@@ -44,6 +44,7 @@
   "approval.submit": "提交回答",
   "approval.skip": "跳过",
   "approval.placeholder": "输入你的回答…",
+  "approval.optionHint": "点一下就把这个选项直接发出去；也可以在下面自己写。",
   "approval.answered": "已回复",
   "approval.skipped": "已跳过",
   "approval.sandbox": "Docker 沙箱",

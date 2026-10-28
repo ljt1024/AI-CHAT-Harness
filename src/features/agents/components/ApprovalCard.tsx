@@ -33,6 +33,9 @@ export function ApprovalCard({ approval, onStop, pendingCount = 1, autoFocus = f
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [answer, setAnswer] = useState('');
+  // State updates between two clicks can both read `busy === false`, and a second
+  // resolve on a finished request is an error the human does not need to see.
+  const busyRef = useRef(false);
   const panelRef = useRef<HTMLElement>(null);
   const pending = approval.status === 'pending';
   const asking = (approval.kind ?? 'approve') === 'input';
@@ -42,10 +45,11 @@ export function ApprovalCard({ approval, onStop, pendingCount = 1, autoFocus = f
     if (autoFocus && pending) panelRef.current?.focus();
   }, [autoFocus, pending, approval.id]);
   const decide = async (approved: boolean, reason = '', remember = false) => {
-    if (busy || !pending) return;
+    if (busyRef.current || !pending) return;
+    busyRef.current = true;
     setBusy(true); setError('');
     try { await resolveApproval(approval.id, approved, reason, remember); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); setBusy(false); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); busyRef.current = false; setBusy(false); }
   };
   const title = t(!pending ? 'approval.record'
     : asking ? 'approval.questionTitle' : 'approval.title');
@@ -57,14 +61,15 @@ export function ApprovalCard({ approval, onStop, pendingCount = 1, autoFocus = f
     </header>
     {pending && asking && <>
       <p className="approval-question">{question}</p>
-      {options.length > 0 && <div className="approval-options">
-        {options.map(option => {
-          const selected = answer === option;
-          return <button key={option} type="button" disabled={busy}
-            className={selected ? 'selected' : ''}
-            onClick={() => setAnswer(selected ? '' : option)}>{option}</button>;
-        })}
-      </div>}
+      {options.length > 0 && <>
+        {/* Each option is a complete answer the model said it can act on, so one
+            tap submits it instead of previewing it in the answer box. */}
+        <div className="approval-options">
+          {options.map(option => <button key={option} type="button" disabled={busy}
+            onClick={() => void decide(true, option)}>{option}</button>)}
+        </div>
+        <p className="approval-note">{t('approval.optionHint')}</p>
+      </>}
       <textarea className="approval-answer" value={answer} disabled={busy} rows={2}
         placeholder={t('approval.placeholder')} aria-label={t('approval.placeholder')}
         onChange={event => setAnswer(event.target.value)} />

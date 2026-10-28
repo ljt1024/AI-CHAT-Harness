@@ -66,7 +66,7 @@ export type AgentEvent =
   | { type: 'skill_loaded'; sessionId: string; skill_id: string; name: string }
   | { type: 'skill_deleted'; sessionId: string; skill_id: string; name: string }
   | { type: 'await_approval'; call_id: string; tool: string; arguments: Record<string, unknown>; rememberable?: boolean }
-  | { type: 'await_input'; call_id: string; tool: string; question: string; arguments: Record<string, unknown> }
+  | { type: 'await_input'; call_id: string; tool: string; question: string; arguments: Record<string, unknown>; options?: string[] }
   | { type: 'approval_resolved'; call_id: string; approved: boolean; reason: string }
   | { type: 'start'; sessionId: string; memoryMessages: number }
   | { type: 'memory'; summarizedMessages: number; recentMessages: number }

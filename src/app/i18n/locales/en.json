@@ -44,6 +44,7 @@
   "approval.submit": "Send answer",
   "approval.skip": "Skip",
   "approval.placeholder": "Type your answer…",
+  "approval.optionHint": "Tap one to send it straight back; or write your own below.",
   "approval.answered": "Answered",
   "approval.skipped": "Skipped",
   "approval.sandbox": "Docker sandbox",
