@@ -72,8 +72,17 @@ def silent():
     return emit
 
 
-def asking(question):
-    return ToolCall(name="ask_user", arguments={"question": question})
+def recording():
+    """Every event the gate emits, with its payload, in the order it emitted them."""
+    seen: list[tuple[str, dict]] = []
+
+    async def emit(kind, **data):
+        seen.append((kind, data))
+    return seen, emit
+
+
+def asking(question, **arguments):
+    return ToolCall(name="ask_user", arguments={"question": question, **arguments})
 
 
 # ---------- the policy file itself ----------
@@ -201,6 +210,74 @@ async def test_asking_can_be_switched_off_entirely():
     assert await approvals.check(AgentDefinition(name="t"), AskUserTool(),
                                  asking("q"), emit, session_id="s1") is True
     assert not asked
+
+
+# ---------- the choices a question can carry ----------
+
+def test_option_list_is_trimmed_to_what_one_button_can_hold():
+    clean = ApprovalManager.clean_options
+    assert clean({"options": ["a", "a", "", "   ", None, 7, "b"]}) == ["a", "b"]
+    # Order carries the recommendation, so it survives; only the tail is dropped.
+    assert clean({"options": [str(index) for index in range(20)]}) == [str(index) for index in range(8)]
+    assert clean({"options": "not a list"}) == []
+    assert clean({}) == []
+    # One button is one sentence, so a wall of text is cut to the item limit.
+    assert clean({"options": ["y" * 500]})[0] == "y" * 200
+
+
+async def test_options_reach_the_ui_cleaned_and_the_record_matches():
+    approvals = manager()
+    seen, emit = recording()
+    task = asyncio.create_task(approvals.check(
+        AgentDefinition(name="t"), AskUserTool(),
+        asking("How should I continue?", options=["Build the empty table now",
+                                                  "Build the empty table now", "  ", "z" * 400,
+                                                  42, "Retry once after the cooldown"]),
+        emit, session_id="s1"))
+    assert await wait_until(lambda: bool(seen)), "the question must reach the UI"
+    kind, data = seen[0]
+    assert kind == "await_input"
+    assert data["options"] == ["Build the empty table now", "z" * 200,
+                               "Retry once after the cooldown"]
+    # A reloaded page reads the same cleaned list, not what the model sent.
+    record = (await approvals.store.list("approvals"))[0]
+    assert record["arguments"]["options"] == data["options"]
+    approvals.resolve(data["call_id"], True, data["options"][0])
+    await task
+
+
+async def test_tapping_an_option_returns_it_verbatim():
+    approvals = manager()
+    bus = EventBus()
+    async def emit(kind, **data):
+        await bus.emit({"type": kind, **data})
+
+    async def run_and_read():
+        await approvals.check(AgentDefinition(name="t"), AskUserTool(),
+                              asking("How should I continue?",
+                                     options=["Build the empty table now"]),
+                              emit, session_id="s1")
+        return current_answer.get()
+
+    task = asyncio.create_task(run_and_read())
+    async for event in bus.stream():
+        if event["type"] == "await_input":
+            approvals.resolve(event["call_id"], True, event["options"][0])
+            break
+    # The choice is the answer: the model asked to be told which branch to take.
+    assert await task == "Build the empty table now"
+
+
+async def test_an_option_asking_for_credentials_never_reaches_the_human():
+    approvals = manager()
+    seen, emit = recording()
+    assert await approvals.check(
+        AgentDefinition(name="t"), AskUserTool(),
+        asking("How should I continue?",
+               options=["Build the empty table now", "Type your api_key here"]),
+        emit, session_id="s1") is True
+    assert not seen, "a choice about credentials must never reach the human"
+    assert "not allowed" in (current_answer.get() or "")
 
 
 async def test_pending_requests_say_whether_they_are_a_gate_or_a_question():

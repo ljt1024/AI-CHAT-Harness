@@ -21,9 +21,23 @@ class AskUserTool:
     permission = "confirm"
     source = "builtin"
     schema = {"type": "object",
-              "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 2000},
-                             "options": {"type": "array", "maxItems": 8,
-                                         "items": {"type": "string", "maxLength": 200}}},
+              "properties": {
+                  "question": {
+                      "type": "string", "minLength": 1, "maxLength": 2000,
+                      "description": ("One question. Say what blocked you and what you can do "
+                                      "next: 'the MCP service returned no data, how should I "
+                                      "continue?'")},
+                  "options": {
+                      "type": "array", "maxItems": 8,
+                      "items": {"type": "string", "maxLength": 200},
+                      "description": ("Two to four concrete ways forward, ordered from the one "
+                                      "you recommend to the fallback. Each option is one "
+                                      "sentence the human can pick as-is, written as what you "
+                                      "will do, not as a label: 'Build the empty table now and "
+                                      "fill nothing.' The human taps one and it comes back to "
+                                      "you verbatim as their answer. Prefer options when a tool "
+                                      "failed or information is missing, so the human keeps the "
+                                      "run moving with one tap instead of stopping it.")}},
               "required": ["question"], "additionalProperties": False}
 
     async def execute(self, args: dict) -> ToolResult:

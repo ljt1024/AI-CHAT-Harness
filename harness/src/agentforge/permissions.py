@@ -10,6 +10,11 @@ logger = logging.getLogger(__name__)
 
 CANCEL_REASON = "Approval cancelled: the run was stopped."
 
+# Choices travel the same approval channel as the question, so they get the same
+# size limits: the UI renders each one as a tap target, not as a paragraph.
+MAX_OPTIONS = 8
+MAX_OPTION_CHARS = 200
+
 # Carries a human's answer from the permission gate back to the tool that asked for
 # it. The gate and the tool run in the same task, so a context var reaches it.
 current_answer: ContextVar[str | None] = ContextVar("agentforge_answer", default=None)
@@ -42,6 +47,27 @@ class ApprovalManager:
     def _workspace_root(self, tool):
         workspace = getattr(tool, "workspace", None)
         return getattr(workspace, "root", None)
+
+    @staticmethod
+    def clean_options(arguments: dict) -> list[str]:
+        """Choices the human can tap as-is, trimmed to what one button can hold.
+
+        Duplicates are dropped because two identical buttons are a broken UI, and
+        order is kept because the model puts its recommendation first.
+        """
+        raw = arguments.get("options")
+        if not isinstance(raw, (list, tuple)):
+            return []
+        cleaned: list[str] = []
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            text = item.strip()[:MAX_OPTION_CHARS].strip()
+            if text and text not in cleaned:
+                cleaned.append(text)
+            if len(cleaned) >= MAX_OPTIONS:
+                break
+        return cleaned
 
     def _resolve_level(self, agent, tool, arguments):
         """Strictest of what the policy says and what the agent configuration says."""
@@ -107,6 +133,15 @@ class ApprovalManager:
             return True
         question = str(call.arguments.get("question", "") or call.arguments.get("prompt", ""))
         allowed, refusal = self.policy.input_allowed(question)
+        options = self.clean_options(call.arguments)
+        if allowed:
+            # A choice is still a request for information, so it is checked for the
+            # same credential bait as the question: offering "paste your API key"
+            # as a button does not make it a different question.
+            for option in options:
+                allowed, refusal = self.policy.input_allowed(option)
+                if not allowed:
+                    break
         if not allowed:
             current_answer.set(refusal)
             return True
@@ -121,14 +156,17 @@ class ApprovalManager:
         if session_id:
             self.owners[identity] = session_id
             self.asked[session_id] = self.asked.get(session_id, 0) + 1
+        # Both the record and the event carry the cleaned choices, so a page reload
+        # cannot put back a duplicate or 400-character button.
+        arguments = {**call.arguments, "options": options} if options else call.arguments
         record = {"id": identity, "tool_call_id": call.id, "tool": call.name,
-                  "arguments": call.arguments, "status": "pending", "kind": "input"}
+                  "arguments": arguments, "status": "pending", "kind": "input"}
         if session_id:
             record["sessionId"] = session_id
         try:
             await self.store.put("approvals", record)
             await emit("await_input", call_id=identity, tool_call_id=call.id, tool=call.name,
-                       question=question, arguments=call.arguments)
+                       question=question, options=options, arguments=arguments)
             timeout = decision.timeout if decision.timeout is not None else self.policy.input_timeout
             try:
                 answered, answer = await asyncio.wait_for(future, timeout)

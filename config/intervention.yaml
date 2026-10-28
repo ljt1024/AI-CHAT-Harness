@@ -75,6 +75,9 @@ tools:
     kind: input
     timeout: 600
     on_timeout: skip
+    # The model may also pass `options`: two to four one-sentence ways forward,
+    # rendered as buttons the human taps to answer. Each option is treated as part
+    # of the question, so forbid_patterns applies to it too.
 
   # ---------- remote tools: the server's own MCP annotation decides ----------
   # Tool names look like `mcp_fetch__fetch` (server id, double underscore, tool

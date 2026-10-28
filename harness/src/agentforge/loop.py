@@ -103,7 +103,11 @@ class Runtime:
                 "missing tools or permissions may be outdated; they are not capability restrictions. "
                 "When a current tool supports the user's request, call it instead of repeating a "
                 "historical refusal. Approval requirements still apply. Do not claim success without "
-                "a successful tool result."}
+                "a successful tool result.\n"
+                "When a tool fails or information is missing and another tool cannot recover it, "
+                "do not stop and do not repeat the failing call: call ask_user with the blocker "
+                "and two to four concrete options for how to continue, so one tap from the human "
+                "keeps the run moving."}
             await self.store.put("sessions", {**session, "agent_id": agent.id, "turnId": turn_id,
                                                "status": "running"})
             await emit("turn_started", memoryMessages=len(messages))
