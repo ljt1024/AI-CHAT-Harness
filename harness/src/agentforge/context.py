@@ -35,8 +35,31 @@ def clip_summary(text: str, limit: int) -> str:
 
 class ContextManager:
     def __init__(self, window: int = DEFAULT_WINDOW, batch_chars: int = 12000,
-                 summary_chars: int = 6000):
+                 summary_chars: int = 6000, keep_ratio: float = 0.25, min_keep: int = 3):
         self.window, self.batch_chars, self.summary_chars = window, batch_chars, summary_chars
+        # How much of the window the verbatim tail may take. A fixed number of
+        # messages is the wrong unit: three turns of one-line answers are not the
+        # same as three turns carrying file contents, and a long task's most
+        # recent turn is usually the one whose details matter most.
+        self.keep_tokens = int(window * keep_ratio)
+        self.min_keep = min_keep
+
+    def _cut(self, messages, safe):
+        """The largest tail that fits the recent-message budget.
+
+        `safe` holds every index a transcript may be split at without orphaning a
+        tool call. The tail is what the model reads verbatim, so take the earliest
+        boundary whose suffix fits -- the most recent context the budget allows --
+        and fall back to the last boundary when even that is too big.
+        """
+        sizes = [estimate_tokens([message]) for message in messages]
+        suffix = [0] * (len(messages) + 1)
+        for index in range(len(messages) - 1, -1, -1):
+            suffix[index] = suffix[index + 1] + sizes[index]
+        for candidate in safe:
+            if suffix[candidate] <= self.keep_tokens:
+                return candidate
+        return safe[-1]
 
     async def _summarize(self, gateway, model_ref, cost: Cost, previous: str, batch: str,
                          depth: int = 0) -> str:
@@ -87,11 +110,11 @@ class ContextManager:
                 pending.add(call["id"])
             if message["role"] == "tool":
                 pending.discard(message["tool_call_id"])
-            if not pending and index < len(messages) - 3:
+            if not pending and len(messages) - (index + 1) >= self.min_keep:
                 safe.append(index + 1)
         if not safe:
             raise ValueError("Context is too large to compact safely. Shorten the task or tool output.")
-        cut = safe[-1]
+        cut = self._cut(messages, safe)
         history = json.dumps(messages[1:cut], ensure_ascii=False)
         summary = ""
         for offset in range(0, len(history), self.batch_chars):

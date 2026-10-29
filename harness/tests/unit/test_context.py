@@ -142,3 +142,35 @@ async def test_a_model_that_never_summarises_says_what_to_do():
     manager = ContextManager(window=1000, batch_chars=500, summary_chars=200)
     with pytest.raises(ValueError, match="empty context summary"):
         await manager.prepare(history_of(6), Mute(), ModelRef(), Cost())
+
+
+async def test_compaction_keeps_the_largest_recent_tail_the_budget_allows():
+    """"Three messages" is not a unit of context: it is one short turn.
+
+    A long task's latest turns carry the constraints the summary only paraphrases,
+    so the tail is sized by tokens -- as much as a quarter of the window -- and
+    only falls back to the minimum when even that is too big.
+    """
+    history = [{"role": "system", "content": "system"}]
+    for index in range(30):
+        history += [{"role": "user", "content": f"step {index} " + "x" * 60},
+                    {"role": "assistant", "content": "done"}]
+    result = await ContextManager(window=1000, batch_chars=2000).prepare(
+        history, Summarizer(), ModelRef(), Cost())
+    retained = len(result) - 2
+    assert retained > 3, "the budget, not a fixed count, decides how much stays verbatim"
+    assert estimate_tokens(result) < 700
+    assert result[-1] == history[-1]
+
+
+async def test_an_oversized_tail_still_compacts_to_the_minimum():
+    """When the last few messages alone blow the budget, keep the least possible."""
+    history = [{"role": "system", "content": "system"}, {"role": "user", "content": "start"}]
+    for index in range(6):
+        history += [{"role": "user", "content": "x" * 400},
+                    {"role": "assistant", "content": None, "tool_calls": [{"id": f"c{index}"}]},
+                    {"role": "tool", "tool_call_id": f"c{index}", "content": "y" * 400}]
+    result = await ContextManager(window=1000, batch_chars=2000).prepare(
+        history, Summarizer(), ModelRef(), Cost())
+    assert len(result) == 5, "system, summary, then the minimum tail: request, call, result"
+    assert estimate_tokens(result) < 700
