@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     # list still wins, and a pinned server that is down fails the run while an
     # auto-attached one is skipped.
     mcp_auto_attach: bool = True
+    # Optional startup file holding an `mcpServers` block. Registration is a
+    # database row with a token in it, which is a poor thing to version; a file
+    # is the way to keep the list beside the code and re-apply it on restart.
+    mcp_config: Path = Path("../config/mcp.json")
     agentforge_workspace: Path = Path("../.agentforge/workspaces")
     approval_timeout: float = 300
     intervention_policy: Path = Path("../config/intervention.yaml")

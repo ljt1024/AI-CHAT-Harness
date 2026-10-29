@@ -22,6 +22,7 @@
   "cap.token": "Access token",
   "cap.tokenOptional": "Only when the service requires auth, e.g. a ModelScope token",
   "cap.tokenSaved": "Credential saved",
+  "cap.switchedOff": "Switched off",
   "cap.connect": "Connect and discover tools",
   "cap.noServers": "No connected services",
   "cap.invalid": "Invalid configuration. Check file paths, SKILL.md or server ID.",

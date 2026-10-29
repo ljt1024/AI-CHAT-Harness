@@ -33,6 +33,8 @@ out/
 
 # Local conversations, uploads, checkpoints and secrets
 end/local_storage/
+# MCP startup file holds bearer tokens; copy the example and fill it in
+config/mcp.json
 # 16 MB CJK font for the frozen reference backend; download per end/assets/fonts/README.md
 end/assets/fonts/*.otf
 # Agent working memory (never commit)

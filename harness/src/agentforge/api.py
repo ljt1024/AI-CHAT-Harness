@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, StrictBool
 
 from agentforge.config import Settings
 from agentforge.artifacts import ArtifactEventBus
-from agentforge.capabilities import (MCPServerRequest, MAX_CONFIG, parse_config,
+from agentforge.capabilities import (MCPServerRequest, MAX_CONFIG, parse_config, parse_servers,
                                      public_server, run_servers, server_tools)
 from agentforge.context import ContextManager
 from agentforge.gateway.deepseek import DeepSeekAdapter
@@ -75,6 +75,10 @@ class ApprovalRequest(BaseModel):
 class MCPConfig(BaseModel):
     """A pasted `{"mcpServers": {...}}` block, unparsed."""
     config: str = Field(min_length=1, max_length=MAX_CONFIG)
+
+
+class MCPToggle(BaseModel):
+    enabled: bool
 
 
 class SandboxFile(BaseModel):
@@ -245,6 +249,7 @@ def create_app(settings=None, store=None, gateway=None):
             await pool.start()
             if await store.get("agents", "default") is None:
                 await store.put("agents", default.model_dump())
+            await load_mcp_config(settings.mcp_config)
             app.state.ready = True
         except Exception:
             logger.warning("MongoDB unavailable; data endpoints return 503.")
@@ -376,6 +381,11 @@ def create_app(settings=None, store=None, gateway=None):
         """Discover once and store. The token stays in the database: nothing
         that leaves this endpoint contains it, and neither does anything printed."""
         record = request.model_dump(exclude_none=True, exclude={"type", "headers"})
+        existing = await store.get("mcp_servers", request.id)
+        if request.enabled is None:
+            # A refresh (same URL, new token) must not resurrect a server the
+            # operator switched off.
+            record["enabled"] = (existing or {}).get("enabled", True)
         try:
             tools = await server_tools(record, settings.mcp_discover_timeout,
                                        settings.mcp_call_timeout)
@@ -392,6 +402,34 @@ def create_app(settings=None, store=None, gateway=None):
         logger.info("mcp server registered id=%s tools=%d token=%s", request.id,
                     len(tools), "yes" if record.get("token") else "no")
         return public_server(server)
+
+    async def load_mcp_config(path):
+        """Register whatever the startup file lists.
+
+        Adding a server otherwise means a database row with a token in it, which
+        is awkward to keep beside the code and impossible to review. An entry
+        that is already registered is refreshed rather than duplicated, so a
+        rotated token takes effect on restart; nothing is deleted for being
+        absent from the file, because the file is a seed, not the only truth.
+        Discovery costs a round trip per server, which is why this runs once at
+        startup and in parallel.
+        """
+        if not path.is_file():
+            return
+        try:
+            requests = parse_servers(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning("mcp config ignored path=%s reason=%s", path, exc)
+            return
+        outcomes = await asyncio.gather(*(save_server(request) for request in requests),
+                                        return_exceptions=True)
+        for request, outcome in zip(requests, outcomes):
+            if isinstance(outcome, BaseException):
+                reason = getattr(outcome, "detail", None) or describe(outcome)
+                logger.warning("mcp server %s from config not registered: %s", request.id, reason)
+            else:
+                logger.info("mcp server %s from config ready tools=%d", outcome["id"],
+                            len(outcome.get("tools", [])))
 
     @app.post("/api/mcp/servers", status_code=201)
     async def register_mcp_server(request: MCPServerRequest):
@@ -429,6 +467,21 @@ def create_app(settings=None, store=None, gateway=None):
         await store.db.mcp_servers.delete_one({"id": identity})
         logger.info("mcp server removed id=%s", identity)
         return {"code": 200}
+
+    @app.patch("/api/mcp/servers/{identity}")
+    async def toggle_mcp_server(identity: str, payload: MCPToggle):
+        """Switch a server off without forgetting its URL and token.
+
+        Deleting is the wrong tool here: a hosted service that is temporarily
+        broken would have to be registered again from scratch, token included.
+        """
+        ready()
+        server = await store.get("mcp_servers", identity)
+        if server is None:
+            raise HTTPException(404, "MCP server is not registered.")
+        await store.put("mcp_servers", {**server, "enabled": payload.enabled})
+        logger.info("mcp server id=%s enabled=%s", identity, payload.enabled)
+        return {"code": 200, "data": public_server({**server, "enabled": payload.enabled})}
 
     async def prepare_agent(agent):
         agent = agent.model_copy(deep=True)

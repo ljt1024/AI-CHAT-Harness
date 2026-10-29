@@ -9,6 +9,11 @@ import docker
 from docker.errors import DockerException
 import pytest
 
+# Tests must never read the developer's real MCP startup file: it holds bearer
+# tokens, and every entry it lists costs a discovery round trip each time a
+# lifespan starts, which would make the suite depend on a hosted service.
+os.environ.setdefault("MCP_CONFIG", str(Path(__file__).resolve().parent / "no-mcp.json"))
+
 
 @pytest.fixture
 async def mcp_service(tmp_path):

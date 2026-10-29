@@ -200,10 +200,14 @@ async def test_registered_servers_are_used_without_picking_them_per_run(tmp_path
 
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
     await store.put("mcp_servers", {"id": "offline", "url": "http://127.0.0.1:9/mcp", "tools": []})
+    await store.put("mcp_servers", {"id": "paused", "url": "http://127.0.0.1:9/mcp",
+                                    "tools": [], "enabled": False})
 
     assert await run_servers(store, []) == (["offline"], set())
     assert await run_servers(store, ["offline"]) == (["offline"], {"offline"})
     assert await run_servers(store, [], auto_attach=False) == ([], set())
+    # A switched-off server costs nothing until something names it explicitly.
+    assert await run_servers(store, ["paused"]) == (["paused"], {"paused"})
 
     monkeypatch.setattr("agentforge.capabilities.discover_tools", offline)
     app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0), store)
@@ -249,3 +253,71 @@ async def test_discovery_needs_the_token_when_the_service_demands_one(tmp_path):
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+async def test_a_startup_file_registers_what_it_lists_and_refreshes_on_restart(tmp_path, monkeypatch):
+    """A file is how the list stays beside the code; a token rotation is a restart."""
+    import httpx
+    from mongomock_motor import AsyncMongoMockClient
+
+    from agentforge.api import create_app
+    from agentforge.config import Settings
+    from agentforge.store import MongoDBStore
+
+    seen = []
+
+    async def fake_discover(url, token=None, timeout=None):
+        seen.append((url, token))
+        return [MCPTool(url, SimpleNamespace(name="fetch", description="Fetch a page",
+                                             inputSchema={"type": "object"}), token)]
+
+    monkeypatch.setattr("agentforge.capabilities.discover_tools", fake_discover)
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"mcpServers": {
+        "Fetch": {"type": "streamable_http", "url": PASTED_URL,
+                  "headers": {"Authorization": "Bearer ms-0123456789abcdef"}},
+        "Sleepy": {"url": "http://127.0.0.1:9/mcp", "enabled": False}}}))
+
+    store = MongoDBStore("", "test", client=AsyncMongoMockClient())
+    settings = Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0,
+                        mcp_config=config)
+    app = create_app(settings, store)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://test") as client:
+            first = (await client.get("/api/mcp/servers")).json()["data"]
+            # The same file after a restart must refresh, not duplicate.
+            await client.post("/api/mcp/servers/import",
+                              json={"config": json.dumps(PASTED)})
+            second = (await client.get("/api/mcp/servers")).json()["data"]
+    assert sorted(server["id"] for server in first) == ["fetch", "sleepy"]
+    assert sorted(server["id"] for server in second) == ["fetch", "sleepy"]
+    # A file entry marked off stays off, and is still listed so it can be switched on.
+    assert {server["id"]: server["enabled"] for server in first} == {
+        "fetch": True, "sleepy": False}
+    assert "ms-0123456789abcdef" not in json.dumps(second)
+
+
+async def test_a_server_can_be_switched_off_without_forgetting_it(tmp_path):
+    """Deleting is the wrong tool for a service that is merely broken today."""
+    import httpx
+    from mongomock_motor import AsyncMongoMockClient
+
+    from agentforge.api import create_app
+    from agentforge.config import Settings
+    from agentforge.store import MongoDBStore
+
+    store = MongoDBStore("", "test", client=AsyncMongoMockClient())
+    await store.put("mcp_servers", {"id": "broken", "url": PASTED_URL,
+                                    "token": "ms-0123456789abcdef", "tools": []})
+    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path,
+                              sandbox_warm_size=0), store)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://test") as client:
+            off = await client.patch("/api/mcp/servers/broken", json={"enabled": False})
+            kept = await store.get("mcp_servers", "broken")
+            missing = await client.patch("/api/mcp/servers/nope", json={"enabled": False})
+    assert off.status_code == 200 and off.json()["data"]["enabled"] is False
+    assert kept["token"] == "ms-0123456789abcdef" and kept["enabled"] is False
+    assert missing.status_code == 404

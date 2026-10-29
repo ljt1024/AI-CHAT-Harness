@@ -11,6 +11,9 @@ from agentforge.redact import mask_url
 
 DISCOVER_TIMEOUT = 30.0
 MAX_CONFIG = 20_000
+# A startup file is a convenience, not a catalogue: every entry costs one
+# discovery round trip and the tools of all of them share a 128-tool budget.
+MAX_SERVERS = 8
 # The names clients use for the transport we speak. Everything else (sse,
 # stdio) is a different protocol and must not be silently downgraded.
 _TRANSPORTS = {"streamable_http", "streamablehttp", "http"}
@@ -37,6 +40,10 @@ class MCPServerRequest(BaseModel):
     # both are folded into `token` and never stored.
     type: str | None = None
     headers: dict[str, str] | None = Field(default=None, max_length=8, repr=False)
+    # Tri-state, not a bool: None means "no opinion", which is what a paste is.
+    # A refresh keeps whatever the row says, and only an explicit value in a
+    # startup file turns a server off without forgetting its URL and token.
+    enabled: bool | None = None
 
     @field_validator("url")
     @classmethod
@@ -107,12 +114,35 @@ def _reason(exc: ValidationError) -> str:
     return exc.errors()[0]["msg"].removeprefix("Value error, ")
 
 
-def parse_config(text: str) -> MCPServerRequest:
-    """Read the `mcpServers` block that MCP catalogues hand out.
+def _request(name: str | None, spec: dict) -> MCPServerRequest:
+    """One catalogue entry, validated, with its credential folded into `token`."""
+    if "command" in spec:
+        raise ValueError("A command-launched (stdio) server cannot run here; use a Streamable "
+                         "HTTP URL.")
+    url = spec.get("url")
+    if not isinstance(url, str) or not url.strip():
+        raise ValueError("The server entry needs a url.")
+    headers = spec.get("headers")
+    if headers is not None and not isinstance(headers, dict):
+        raise ValueError("headers must be an object.")
+    enabled = spec.get("enabled")
+    try:
+        return MCPServerRequest(
+            id=derive_id(name), url=url.strip(),
+            token=spec.get("token") if isinstance(spec.get("token"), str) else None,
+            type=spec.get("type") if isinstance(spec.get("type"), str) else None,
+            headers={str(key): str(value) for key, value in headers.items()} if headers else None,
+            enabled=enabled if isinstance(enabled, bool) else None)
+    except ValidationError as exc:
+        raise ValueError(_reason(exc)) from None
 
-    ModelScope, Smithery and the desktop clients all publish the same shape,
-    so pasting that block is the path people actually take. One server per
-    paste keeps the failure message attachable to a single row.
+
+def parse_servers(text: str) -> list[MCPServerRequest]:
+    """Every server in an `mcpServers` block.
+
+    The same shape a catalogue hands out, read as a whole: a startup file holds
+    several servers, while a paste is limited to one so a failure message can
+    be attached to a single row.
     """
     text = text.strip()
     if not text:
@@ -125,33 +155,38 @@ def parse_config(text: str) -> MCPServerRequest:
         raise ValueError(f"Not valid JSON: {exc.msg} (line {exc.lineno}).") from None
     if not isinstance(document, dict):
         raise ValueError("The configuration must be a JSON object.")
-    name, spec = None, document
-    if "mcpServers" in document:
-        servers = document["mcpServers"]
-        if not isinstance(servers, dict) or not servers:
-            raise ValueError("mcpServers must be a non-empty object.")
-        if len(servers) > 1:
-            raise ValueError("This configuration holds several servers; paste one at a time.")
-        name, spec = next(iter(servers.items()))
-    if not isinstance(spec, dict):
-        raise ValueError("A server entry must be an object.")
-    if "command" in spec:
-        raise ValueError("A command-launched (stdio) server cannot run here; use a Streamable "
-                         "HTTP URL.")
-    url = spec.get("url")
-    if not isinstance(url, str) or not url.strip():
-        raise ValueError("The server entry needs a url.")
-    headers = spec.get("headers")
-    if headers is not None and not isinstance(headers, dict):
-        raise ValueError("headers must be an object.")
-    try:
-        return MCPServerRequest(
-            id=derive_id(name), url=url.strip(),
-            token=spec.get("token") if isinstance(spec.get("token"), str) else None,
-            type=spec.get("type") if isinstance(spec.get("type"), str) else None,
-            headers={str(key): str(value) for key, value in headers.items()} if headers else None)
-    except ValidationError as exc:
-        raise ValueError(_reason(exc)) from None
+    if "mcpServers" not in document:
+        return [_request(None, document)]
+    servers = document["mcpServers"]
+    if not isinstance(servers, dict) or not servers:
+        raise ValueError("mcpServers must be a non-empty object.")
+    if len(servers) > MAX_SERVERS:
+        raise ValueError(f"At most {MAX_SERVERS} servers can be loaded at once.")
+    requests = []
+    # Only a multi-server block needs the key in the message; for a single paste
+    # the row is obvious and the prefix would just be noise.
+    named = len(servers) > 1
+    for name, spec in servers.items():
+        if not isinstance(spec, dict):
+            raise ValueError(f"A server entry must be an object: {name!r} is not.")
+        try:
+            requests.append(_request(name, spec))
+        except ValueError as exc:
+            raise ValueError(f"{name}: {exc}" if named else str(exc)) from None
+    return requests
+
+
+def parse_config(text: str) -> MCPServerRequest:
+    """Read the `mcpServers` block that MCP catalogues hand out.
+
+    ModelScope, Smithery and the desktop clients all publish the same shape,
+    so pasting that block is the path people actually take. One server per
+    paste keeps the failure message attachable to a single row.
+    """
+    requests = parse_servers(text)
+    if len(requests) > 1:
+        raise ValueError("This configuration holds several servers; paste one at a time.")
+    return requests[0]
 
 
 def public_server(server: dict) -> dict:
@@ -162,7 +197,8 @@ def public_server(server: dict) -> dict:
     recognise the row, so the opaque segment is masked.
     """
     return {"id": server["id"], "url": mask_url(server["url"]),
-            "tools": server.get("tools", []), "hasToken": bool(server.get("token"))}
+            "tools": server.get("tools", []), "hasToken": bool(server.get("token")),
+            "enabled": server.get("enabled", True)}
 
 
 async def run_servers(store, pinned, auto_attach: bool = True):
@@ -173,11 +209,18 @@ async def run_servers(store, pinned, auto_attach: bool = True):
     may use it, which is what lets MCP work without a per-conversation picker.
     Returns `(ids, required)` so a caller can fail hard on a missing pin while
     skipping an auto-attached server that happens to be offline.
+
+    A switched-off server never joins a run by itself -- that is the whole point
+    of the switch, which exists because a registered-but-broken service would
+    otherwise cost a discovery timeout and a warning on every single turn. A pin
+    still wins: naming a server on the agent is a stronger statement than a
+    default, and the run then fails loudly instead of quietly losing its tools.
     """
     pinned = list(dict.fromkeys(pinned))
     if pinned or not auto_attach:
         return pinned, set(pinned)
-    return [server["id"] for server in await store.list("mcp_servers")], set()
+    servers = await store.list("mcp_servers")
+    return [server["id"] for server in servers if server.get("enabled", True)], set()
 
 
 async def server_tools(server, discover_timeout: float | None = None,

@@ -6,7 +6,7 @@ import './CapabilitiesPanel.css';
 
 export interface CapabilitySelection { skills: string[]; mcp_servers: string[] }
 interface Skill { id: string; name: string; files: string[] }
-interface Server { id: string; url: string; hasToken: boolean; tools: { name: string }[] }
+interface Server { id: string; url: string; hasToken: boolean; enabled?: boolean; tools: { name: string }[] }
 const FILE_LIMIT = 1_000_000;
 const DOC_LIMIT = 24_000;
 const PACKAGE_LIMIT = 5_000_000;
@@ -140,7 +140,7 @@ export function CapabilitiesPanel({ value, onChange, disabled, sandbox, onPrepar
         {servers.map(server => <div className="cap-item" key={server.id}><label className="cap-row">
           <input type="checkbox" checked={value.mcp_servers.includes(server.id)}
             onChange={event => change('mcp_servers', server.id, event.target.checked)} />
-          <span>{server.id}<small>{server.url}</small>{server.hasToken && <small role="status">{t('cap.tokenSaved')}</small>}<small>{server.tools.map(tool => tool.name).join(', ')}</small></span>
+          <span>{server.id}<small>{server.url}</small>{server.hasToken && <small role="status">{t('cap.tokenSaved')}</small>}{server.enabled === false && <small role="status">{t('cap.switchedOff')}</small>}<small>{server.tools.map(tool => tool.name).join(', ')}</small></span>
         </label><button type="button" onClick={() => askRemove('mcp_servers', server.id, server.id)}>{t('cap.remove')}</button></div>)}
       </fieldset>
     </div>
