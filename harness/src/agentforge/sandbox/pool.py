@@ -45,15 +45,38 @@ class SandboxPool:
         self.closed, self.last_error = False, None
 
     async def start(self):
+        # Nothing this process remembers from a predecessor can be rebuilt onto: the
+        # session-to-workspace map lives in memory. Sweeping before warming therefore
+        # reclaims real leftovers instead of racing the warm-up.
+        await self.sweep()
         await self.replenish()
         self.maintenance = asyncio.create_task(self._maintain())
 
+    async def sweep(self):
+        """Reclaim containers and directories no live session can rebuild onto."""
+        sweep = getattr(self.runner, "sweep", None)
+        if sweep is None:
+            return None
+        try:
+            return await sweep(keep=[workspace.root for workspace in self.workspaces.values()])
+        except Exception as exc:
+            # Docker being down is not a reason to refuse to start.
+            logger.warning("Sandbox sweep skipped: %s", exc)
+            return None
+
     async def _maintain(self):
+        cycles = 0
         while True:
             try:
                 await asyncio.sleep(min(30, max(0.1, self.idle_seconds / 2)))
                 await self.reap()
                 await self.replenish()
+                # Directories outlive the leases that used them, so one that no session
+                # remembers and no container mounts is reclaimed roughly hourly. Faster
+                # would be wasted work; slower lets a long-lived process accumulate.
+                cycles += 1
+                if cycles % 120 == 0:
+                    await self.sweep()
             except asyncio.CancelledError:
                 raise
             except Exception:

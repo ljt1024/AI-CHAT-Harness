@@ -61,3 +61,57 @@ async def test_cancellation_destroys_container(tmp_path):
     with pytest.raises(asyncio.CancelledError):
         await task
     assert not sandbox.alive
+
+
+async def test_destroy_keeps_the_workspace_for_a_rebuild(tmp_path):
+    client = MagicMock()
+    runner = DockerRunner(tmp_path, client)
+    sandbox = await runner.create()
+    sandbox.workspace.path("note.txt").write_text("x")
+    await runner.destroy(sandbox)
+    # An idle sandbox is reaped and the same session rebuilds onto this directory,
+    # so its files have to survive the container.
+    assert sandbox.workspace.path("note.txt").read_text() == "x"
+
+
+def test_discard_workspace_refuses_anything_outside_its_root(tmp_path):
+    (tmp_path / "root").mkdir()
+    runner = DockerRunner(tmp_path / "root", MagicMock())
+    outside = tmp_path / "kept"
+    outside.mkdir()
+    assert runner.discard_workspace(outside) is False
+    assert outside.is_dir()
+    # The managed root itself is never a valid target.
+    assert runner.discard_workspace(runner.root) is False
+    assert runner.root.is_dir()
+
+
+async def test_sweep_removes_exited_containers_and_stale_directories(tmp_path):
+    import os
+    client = MagicMock()
+    dead, alive = MagicMock(), MagicMock()
+    dead.status, dead.attrs = "exited", {"Mounts": []}
+    mounted = tmp_path / "mounted"
+    mounted.mkdir()
+    os.utime(mounted, (0, 0))  # old, so only the mount keeps it alive
+    alive.status = "running"
+    alive.attrs = {"Mounts": [{"Source": str(mounted)}]}
+    client.containers.list.return_value = [dead, alive]
+    stale = tmp_path / "stale"
+    stale.mkdir()
+    os.utime(stale, (0, 0))
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    retained = tmp_path / "retained"
+    retained.mkdir()
+    os.utime(retained, (0, 0))
+
+    removed = await DockerRunner(tmp_path, client).sweep(keep=[retained])
+
+    assert removed["containers"] == 1 and removed["keptRunning"] == 1
+    assert not stale.exists(), "an old unmounted directory is a leftover"
+    assert mounted.is_dir(), "a directory a running container mounts is in use"
+    assert retained.is_dir(), "the pool may rebuild a reaped session onto this directory"
+    assert fresh.is_dir(), "a directory younger than the threshold may be mid-creation"
+    dead.remove.assert_called_once_with(force=True)
+    alive.remove.assert_not_called()

@@ -13,6 +13,12 @@ from agentforge.tools.fs import Workspace
 class FakeRunner:
     def __init__(self, root):
         self.root, self.fail, self.created = root, False, []
+        self.swept = 0
+
+    async def sweep(self, force=False, min_age_seconds=600, keep=()):
+        self.swept += 1
+        self.swept_keep = list(keep)
+        return {"containers": 0, "workspaces": 0, "keptRunning": 0}
 
     async def create(self, image="python:3.12-slim", workspace=None):
         if self.fail:
@@ -52,6 +58,9 @@ async def test_warm_claim_cache_isolation_expiry_and_restore(tmp_path):
                        clock=lambda: now[0])
     await pool.start()
     try:
+        # Whatever a killed process left behind is unreachable, so it is swept
+        # before warming rather than after.
+        assert pool.runner.swept == 1
         assert pool.status()["states"]["WARM"] == 2
         first = await pool.acquire("first")
         first.sandbox.workspace.path("result.txt").write_text("keep")
@@ -70,6 +79,9 @@ async def test_warm_claim_cache_isolation_expiry_and_restore(tmp_path):
         assert not first.sandbox.alive
         restored = await pool.acquire("first")
         assert restored.sandbox.workspace.path("result.txt").read_text() == "keep"
+        # A sweep must not reclaim a directory the pool can still rebuild onto.
+        await pool.sweep()
+        assert str(restored.sandbox.workspace.root) in {str(path) for path in pool.runner.swept_keep}
     finally:
         await pool.close()
     assert not pool.entries

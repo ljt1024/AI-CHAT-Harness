@@ -1,7 +1,10 @@
 import asyncio
 from dataclasses import dataclass
+import logging
 import os
 from pathlib import Path
+import shutil
+import time
 
 import docker
 from docker.errors import DockerException, NotFound
@@ -9,6 +12,9 @@ from docker.errors import DockerException, NotFound
 from agentforge.models import SandboxPolicy, ToolResult, new_id
 from agentforge.tools.base import bounded
 from agentforge.tools.fs import Workspace
+
+
+logger = logging.getLogger(__name__)
 
 
 class SandboxUnavailable(RuntimeError):
@@ -82,6 +88,78 @@ class DockerRunner:
             await asyncio.to_thread(sandbox.container.remove, force=True)
         except NotFound:
             pass
+        # The directory deliberately survives: an idle sandbox is reaped and the same
+        # session rebuilds onto the same workspace, so its files must still be there.
+        # Leftovers are reclaimed by sweep() once no session remembers them.
+
+    def discard_workspace(self, workspace):
+        """Remove a sandbox directory, refusing anything outside its own root."""
+        # A bare Path is taken as the directory itself: Path.root is "/", so asking
+        # for `.root` here would resolve to the filesystem root.
+        path = workspace.resolve() if isinstance(workspace, (str, Path)) else Path(workspace.root)
+        root = path.resolve()
+        # Only a direct child of the managed root, never the root itself: a bug in a
+        # caller must not turn this into "delete the workspaces directory".
+        if not self.root or root.parent != self.root:
+            return False
+        try:
+            shutil.rmtree(root)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError as exc:
+            logger.warning("Could not remove sandbox workspace %s: %s", root.name, exc)
+            return False
+
+    async def sweep(self, force: bool = False, min_age_seconds: float = 600, keep=()) -> dict:
+        """Remove containers and directories a previous process left behind.
+
+        A SIGKILL never reaches lifespan shutdown, so containers keep running long
+        after the backend that owned them is gone, and nothing can exec into them.
+        Running containers are only touched with force: another backend on this
+        machine can legitimately own them.
+        """
+        client = await self.connect()
+        removed = {"containers": 0, "workspaces": 0, "keptRunning": 0}
+        in_use: set[Path] = set()
+        containers = await asyncio.to_thread(
+            client.containers.list, all=True, filters={"label": "agentforge.managed=true"})
+        for container in containers:
+            for mount in container.attrs.get("Mounts") or []:
+                if mount.get("Source"):
+                    in_use.add(Path(mount["Source"]).resolve())
+            if getattr(container, "status", "") == "running" and not force:
+                removed["keptRunning"] += 1
+                continue
+            try:
+                await asyncio.to_thread(container.remove, force=True)
+                removed["containers"] += 1
+            except NotFound:
+                removed["containers"] += 1
+            except DockerException as exc:
+                logger.warning("Could not remove a leftover sandbox container: %s", exc)
+        if not self.root.is_dir():
+            return removed
+        # A reaped sandbox keeps its directory on purpose, so "no container mounts it"
+        # is not enough: the pool also says which ones it may rebuild onto.
+        retained = {Path(path).resolve() for path in keep}
+        now = time.time()
+        for entry in self.root.iterdir():
+            # A directory still mounted by a container is in use, and a fresh one may
+            # not be mounted yet, so only old unmounted ones count as leftovers.
+            if not entry.is_dir() or entry.resolve() in in_use or entry.resolve() in retained:
+                continue
+            try:
+                if now - entry.stat().st_mtime < min_age_seconds:
+                    continue
+            except OSError:
+                continue
+            if self.discard_workspace(entry):
+                removed["workspaces"] += 1
+        if removed["containers"] or removed["workspaces"]:
+            logger.info("sandbox sweep removed containers=%d workspaces=%d kept_running=%d",
+                        removed["containers"], removed["workspaces"], removed["keptRunning"])
+        return removed
 
     async def healthy(self, sandbox: Sandbox) -> bool:
         if not sandbox.alive:
