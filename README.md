@@ -118,7 +118,7 @@ scripts/audit-skills.sh [dir]                              # 安装前静态审�
 - 技能可从**公开 GitHub**（按 commit 固定）、**沙箱工作区**或**显式内联**导入；导入前校验、导入后按 SHA-256 同步进沙箱，`SKILL.md` 注入提示词。
 - 单文件上限 1 MB、整包 5 MB、100 个文件、`SKILL.md` 24 KB；安装过程不执行代码、不装依赖。
 - MCP 以无凭据环境启动并绑定独立工作区。远程工具**不进沙箱**（走宿主网络、带令牌），所以要不要审批由远端自己声明的注解决定：`readOnlyHint=true` 且非 `destructiveHint=true` 的只读工具直接执行，其余每次都要批准。`config/intervention.yaml` 里可用 `"mcp_*"` 整体收紧、用 `mcp_local__run_command: confirm` 覆盖单个工具；策略 `deny` 优先级最高。
-- MCP 支持可选访问令牌（Bearer header）：连接**魔搭托管 MCP** 时填入服务 URL 与魔搭令牌即可；令牌只存后端，接口返回、日志、错误信息中一律脱敏（托管 URL 的租户段显示为 `****`）。发现超时 30s、调用超时 60s（`MCP_DISCOVER_TIMEOUT` / `MCP_CALL_TIMEOUT`），401/403 会明确提示令牌被拒。
+- MCP 支持可选访问令牌（Bearer header）：连接**魔搭托管 MCP** 时填入服务 URL 与魔搭令牌即可；令牌只存后端，接口返回、日志、错误信息中一律脱敏（托管 URL 的租户段显示为 `****`）。发现超时 30s、调用超时 60s（`MCP_DISCOVER_TIMEOUT` / `MCP_CALL_TIMEOUT`），401/403 会明确提示令牌被拒。已注册的服务**每轮重新发现**（托管服务可能换工具或过期），彼此并发，所以首 token 前的等待取决于最慢的那个而不是它们的总和——串行时四个服务要等 11 秒。
 - **注册即启用，运行时自动装配**：产品 UI 不暴露「技能与 MCP」面板（MCP 工具由智能体自己决定何时用），配置好一次后每个会话都能用，不需要逐轮勾选。若某个已保存的智能体显式 pin 了服务列表，pin 优先且服务不可用会让该轮直接失败；仅"自动装配"的服务掉线只记一条 `skipped` 日志、不影响本轮。`MCP_AUTO_ATTACH=false` 可退回只认 pin。调试时用 `VITE_SHOW_SANDBOX_UI=true` 启动前端才会显示该面板。
 - 也可以直接粘贴平台给出的整段配置（`{"mcpServers": {"fetch": {"type": "streamable_http", "url": "...", "headers": {"Authorization": "Bearer ..."}}}}`）：服务标识取自配置里的键名，`headers` 只接受 `Authorization`，令牌折进同一条记录；同一 URL 重复粘贴是刷新而不是新增，适合令牌轮换。
 

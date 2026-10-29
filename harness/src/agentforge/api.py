@@ -485,28 +485,33 @@ def create_app(settings=None, store=None, gateway=None):
         # skipped instead of failing the whole turn.
         selected, required = await run_servers(store, agent.mcp_servers,
                                                settings.mcp_auto_attach)
+        attached = []
         for identity in selected:
-            strict = identity in required
             server = await store.get("mcp_servers", identity)
             if server is None:
-                if not strict:
-                    continue
-                raise HTTPException(422, f"MCP server is not registered: {identity}")
-            try:
-                # Discovered again on every run rather than read from the stored
-                # snapshot: a hosted service can change its tools or expire.
-                discovered = await server_tools(server, settings.mcp_discover_timeout,
-                                                settings.mcp_call_timeout)
-            except Exception as exc:
+                if identity in required:
+                    raise HTTPException(422, f"MCP server is not registered: {identity}")
+                continue
+            attached.append((identity, server))
+        # Discovered again on every run rather than read from the stored snapshot: a
+        # hosted service can change its tools or expire. The calls are independent, so
+        # they run together -- sequentially, four registered servers delayed the first
+        # token by 11 s, which is the whole cost of a warm hosted endpoint.
+        outcomes = await asyncio.gather(*[
+            server_tools(server, settings.mcp_discover_timeout, settings.mcp_call_timeout)
+            for _, server in attached], return_exceptions=True)
+        for (identity, _), outcome in zip(attached, outcomes):
+            strict = identity in required
+            if isinstance(outcome, BaseException):
                 logger.warning("mcp server %s unavailable at run time%s: %s", identity,
-                               "" if strict else " (skipped)", describe(exc))
+                               "" if strict else " (skipped)", describe(outcome))
                 if not strict:
                     continue
-                if status_code(exc) in {401, 403}:
+                if status_code(outcome) in {401, 403}:
                     raise HTTPException(502, f"MCP server rejected the access token: {identity}") from None
                 raise HTTPException(502, f"MCP server unavailable: {identity}") from None
-            logger.info("mcp server %s contributed %d tools", identity, len(discovered))
-            remote.extend(discovered)
+            logger.info("mcp server %s contributed %d tools", identity, len(outcome))
+            remote.extend(outcome)
         agent.tools = list(dict.fromkeys([*agent.tools, *(tool.name for tool in remote)]))
         if len(agent.tools) > 128:
             raise HTTPException(422, "Enable fewer MCP servers; at most 128 tools per run are supported.")
