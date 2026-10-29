@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 # remote side in an unknown state, so the default is generous rather than tight.
 DEFAULT_TIMEOUT = 60.0
 
+# A remote tool usually answers with one document -- a product list, a page of
+# JSON -- so the local 4k ceiling would cut it mid-string and hand the model
+# something it cannot parse. The ceiling is still a ceiling: 16k holds a 30-item
+# listing with room to spare, and anything beyond that is a paging problem the
+# tool's own arguments should solve.
+OUTPUT_LIMIT = 16000
+
 
 def headers(token: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
@@ -70,16 +77,18 @@ class MCPTool:
             async with asyncio.timeout(self.timeout):
                 async with connect(self.url, self.token, self.timeout) as session:
                     result = await session.call_tool(self.remote_name, args)
-            output = bounded("\n".join(c.text for c in result.content if c.type == "text"))
+            output = bounded("\n".join(c.text for c in result.content if c.type == "text"),
+                             OUTPUT_LIMIT)
             structured = result.structuredContent
             if isinstance(structured, dict) and "ok" in structured:
                 return ToolResult.model_validate(structured)
             if result.isError:
                 logger.warning("mcp tool %s at %s returned an error: %s", self.name,
-                               mask_url(self.url), bounded(output)[:240])
+                               mask_url(self.url), output[:240])
                 return ToolResult(ok=False, output=output,
-                                  error=f"MCP tool reported an error: {bounded(output)[:240]}")
-            return ToolResult(ok=True, output=output)
+                                  error=f"MCP tool reported an error: {output[:240]}",
+                                  limit=OUTPUT_LIMIT)
+            return ToolResult(ok=True, output=output, limit=OUTPUT_LIMIT)
         except Exception as exc:
             # The remote side may have finished the work before the timeout, so
             # the message tells the caller to check state instead of retrying.

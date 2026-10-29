@@ -3,7 +3,7 @@ import json
 
 from agentforge.models import ToolResult
 from agentforge.tools import fs
-from agentforge.tools.base import bounded
+from agentforge.tools.base import DEFAULT_OUTPUT_LIMIT, bounded
 
 
 class SandboxTool:
@@ -25,15 +25,20 @@ class SandboxTool:
         if self.name == "run_command":
             return await self.runner.execute(self.sandbox, ["sh", "-c", args["command"]], self.timeout)
         # Transfer trusted source in the exec argument; no host mount or runtime dependencies.
-        prelude = '''import asyncio, json, sys, fnmatch, re
+        # `bounded` is copied by source, so whatever its signature references has to
+        # travel with it -- the container has only what this prelude defines.
+        prelude = f'''import asyncio, json, sys, fnmatch, re
 from pathlib import Path
+DEFAULT_OUTPUT_LIMIT = {DEFAULT_OUTPUT_LIMIT}
 class ToolResult:
     def __init__(self, ok, output='', error=None):
         self.ok, self.output, self.error = ok, output, error
 '''
         worker = prelude + inspect.getsource(bounded) + '\n' + inspect.getsource(fs.Workspace)
         worker += '\n' + inspect.getsource(fs.FileTool)
-        worker += '\n_original_bounded = bounded\ndef bounded(text, limit=4000): return _original_bounded(text, min(limit, 1500))\n'
+        worker += ('\n_original_bounded = bounded\n' +
+                   f'def bounded(text, limit={DEFAULT_OUTPUT_LIMIT}): '
+                   'return _original_bounded(text, min(limit, 1500))\n')
         worker += '\nr=asyncio.run(FileTool(Workspace(Path("/workspace")),sys.argv[1]).execute(json.loads(sys.argv[2])))\nprint(json.dumps(vars(r), ensure_ascii=False))'
         result = await self.runner.execute(self.sandbox, ["python", "-c", worker, self.name, json.dumps(args)], self.timeout)
         if not result.ok:

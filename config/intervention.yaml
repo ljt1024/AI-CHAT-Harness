@@ -90,6 +90,12 @@ tools:
   # says about itself (rolling back to "approve every MCP call"):
   # "mcp_*": confirm
 
+  # A catalogue search reads a cached feed and cannot change anything on either
+  # side, but it declares no annotation, so it would otherwise stop the run for
+  # a card on every single query. Reading the feed is the whole point of the
+  # call, which is exactly the case this file exists to exempt.
+  mcp_pdd_baiyi_mcp__get_baiyi_items: auto
+
 model_requests:
   enabled: true
   # A model that keeps asking is a stuck model. Cap it per run.

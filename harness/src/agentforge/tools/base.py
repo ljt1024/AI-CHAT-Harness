@@ -5,11 +5,27 @@ from jsonschema import ValidationError, validate
 from agentforge.models import ToolResult
 
 
-def bounded(text: str, limit: int = 4000) -> str:
+DEFAULT_OUTPUT_LIMIT = 4000
+
+
+def bounded(text: str, limit: int = DEFAULT_OUTPUT_LIMIT) -> str:
     suffix = "\n[Truncated. Read a smaller range or narrow the search.]"
     if limit <= len(suffix):
         return text[:limit]
     return text if len(text) <= limit else text[:limit - len(suffix)] + suffix
+
+
+def bounded_result(result: ToolResult) -> ToolResult:
+    """Clip a result to its own ceiling, or to the local default if it set none.
+
+    Every path that hands a tool result to the model goes through here, so a tool
+    that legitimately returns a large document is not cut twice at the small
+    default by the registry and then again by the middleware.
+    """
+    result.output = bounded(result.output, result.limit or DEFAULT_OUTPUT_LIMIT)
+    if result.error:
+        result.error = bounded(result.error)
+    return result
 
 
 class Tool(Protocol):
@@ -46,10 +62,7 @@ class ToolRegistry:
         try:
             validate(args, tool.schema)
             result = await tool.execute(args)
-            result.output = bounded(result.output)
-            if result.error:
-                result.error = bounded(result.error)
-            return result
+            return bounded_result(result)
         except ValidationError:
             return ToolResult(ok=False, error="Invalid arguments. Check the tool's JSON schema.")
         except (OSError, ValueError) as exc:

@@ -49,6 +49,12 @@ class ToolResult(BaseModel):
     ok: bool
     output: str = ""
     error: str | None = None
+    # How much of `output` this tool is allowed to keep. A remote service often
+    # returns one large document (a product list, a page of JSON), and cutting it
+    # at the local default leaves the caller with a half sentence it cannot parse,
+    # so the tool that knows the shape sets its own ceiling. Local defaults stay
+    # tight: shell and file tools gain nothing from a bigger slice.
+    limit: int | None = Field(default=None, exclude=True)
 
 
 class Cost(BaseModel):

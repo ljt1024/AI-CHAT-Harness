@@ -1,6 +1,7 @@
 # 0005: Bounded tool output and batched context compaction
 Background: Long tool results and histories degrade model reliability and exceed context windows.
 Decision: Bound tool text to 4,000 characters with an actionable truncation hint.
+Amendment (2026-10-29): a tool may raise its own ceiling through `ToolResult.limit`; remote MCP tools declare 16,000. A remote call usually returns one document (a product listing, a page of JSON), and clipping it at the local default left the model a half string it could not parse. Both the registry and the middleware read that declared limit, so the small default is applied once, not twice. Local tools keep 4,000.
 Decision: Estimate tokens conservatively from UTF-8 bytes; compact at 70% of the configured window.
 Decision: Summarize early history in bounded batches; preserve recent messages and complete tool pairs.
 Decision: Charge summary token usage to the same run and stop when its budget is exhausted.

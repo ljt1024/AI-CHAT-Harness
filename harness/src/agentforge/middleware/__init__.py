@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from agentforge.tools.base import bounded
+from agentforge.tools.base import bounded_result
 
 
 class Middleware(Protocol):
@@ -80,10 +80,7 @@ class ToolsSummarization(Layer):
     name = "ToolsSummarization"
 
     async def on_tool_result(self, ctx, result):
-        result.output = bounded(result.output)
-        if result.error:
-            result.error = bounded(result.error)
-        return result
+        return bounded_result(result)
 
 
 class SandboxCircuitBreaker(Layer):
