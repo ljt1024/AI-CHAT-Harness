@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import { downloadAgentArtifact } from '../api';
+import { canPreview, formatLabel } from '../preview';
 import type { AgentArtifact } from '../types';
 import './AgentArtifacts.css';
 
@@ -27,9 +28,9 @@ function ArtifactCard({ artifact, onPreview }: { artifact: AgentArtifact; onPrev
   };
   const size = artifact.size < 1024 * 1024 ? `${Math.max(1, Math.ceil(artifact.size / 1024))} KB` : `${(artifact.size / 1024 / 1024).toFixed(1)} MB`;
   return <li className="agent-artifact">
-    <span className="agent-artifact-format">{artifact.format === 'xlsx' ? 'Excel' : artifact.format === 'pptx' ? 'PPT' : artifact.format.toUpperCase()}</span>
+    <span className="agent-artifact-format">{formatLabel(artifact)}</span>
     <div className="agent-artifact-info"><strong>{artifact.fileName}</strong><small>{size} · {t('artifact.ready')}</small></div>
-    {onPreview && (artifact.format === 'png' || artifact.format === 'pdf' || artifact.format === 'pptx' || artifact.format === 'html' || artifact.format === 'xlsx') && <button type="button" onClick={() => onPreview(artifact)} aria-label={`${t('share.previewAlt')} ${artifact.fileName}`}>{t('share.previewAlt')}</button>}
+    {onPreview && canPreview(artifact) && <button type="button" onClick={() => onPreview(artifact)} aria-label={`${t('share.previewAlt')} ${artifact.fileName}`}>{t('share.previewAlt')}</button>}
     <button type="button" onClick={download} disabled={downloading} aria-label={`${t('artifact.downloadLabel')} ${artifact.fileName}`}>
       {downloading ? t('artifact.downloading') : t('artifact.download')}
     </button>

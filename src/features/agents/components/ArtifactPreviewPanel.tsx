@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-import { DraftContent, HtmlPreview, SheetPreview } from './LiveArtifactContent';
+import { DocumentPreview, DraftContent, HtmlPreview, SheetPreview, SlidePreview,
+  type ParagraphPayload, type SheetPayload, type SlidePayload } from './LiveArtifactContent';
 import { downloadAgentArtifact } from '../api';
-import type { AgentPreview, AgentArtifact } from '../types';
+import { formatLabel, previewKind } from '../preview';
+import type { AgentArtifact } from '../types';
 import { getFileDownloadUrl } from '@/shared/utils/fileDownloads';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import './ArtifactPreviewPanel.css';
@@ -21,7 +23,7 @@ export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }:
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
   const [rendering, setRendering] = useState(true);
-  const [fileContent, setFileContent] = useState<{ html?: string; sheets?: AgentPreview['sheets'] } | null>(null);
+  const [fileContent, setFileContent] = useState<{ html?: string; sheets?: SheetPayload[]; slides?: SlidePayload[]; paragraphs?: ParagraphPayload[] } | null>(null);
   const [fileError, setFileError] = useState('');
   const [width, setWidth] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -31,26 +33,35 @@ export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }:
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const isSlides = artifact.format === 'pptx';
   const draft = artifact.draft;
-  const isWebOrSheet = artifact.format === 'html' || artifact.format === 'xlsx';
-  const previewId = !draft ? (isSlides ? artifact.previewFileId : artifact.format === 'pdf' ? artifact.fileId : undefined) : undefined;
+  const kind = previewKind(artifact);
+  // A delivered file either renders from its own bytes (PDF, image, HTML) or from
+  // the reading the server made of it (sheets, slides, paragraphs).
+  const renders = kind === 'html' || kind === 'sheets' || kind === 'slides' || kind === 'document';
+  const sourceId = !draft && renders
+    ? (kind === 'html' ? artifact.fileId : artifact.previewFileId) : undefined;
+  const previewId = !draft && kind === 'pdf' ? artifact.fileId : undefined;
 
   useEffect(() => {
     setFileContent(null); setFileError('');
-    if (draft || !isWebOrSheet) return;
+    if (!sourceId) return;
     const controller = new AbortController();
-    const id = artifact.format === 'html' ? artifact.fileId : artifact.previewFileId;
-    if (!id) { setFileError(t('preview.legacyFile')); return; }
-    void downloadAgentArtifact(id, controller.signal).then(blob => blob.text()).then(content => {
+    void downloadAgentArtifact(sourceId, controller.signal).then(blob => blob.text()).then(content => {
       if (controller.signal.aborted) return;
-      if (artifact.format === 'html') setFileContent({ html: content });
-      else {
-        const data = JSON.parse(content);
+      if (kind === 'html') { setFileContent({ html: content }); return; }
+      const data = JSON.parse(content);
+      if (kind === 'sheets') {
         if (!Array.isArray(data.sheets)) throw new Error(t('preview.invalidSheet'));
         setFileContent({ sheets: data.sheets });
+      } else if (kind === 'slides') {
+        if (!Array.isArray(data.slides)) throw new Error(t('preview.invalidSlides'));
+        setFileContent({ slides: data.slides });
+      } else {
+        if (!Array.isArray(data.paragraphs)) throw new Error(t('preview.invalidDocument'));
+        setFileContent({ paragraphs: data.paragraphs });
       }
     }).catch(cause => { if (!controller.signal.aborted) setFileError(String(cause.message || cause)); });
     return () => controller.abort();
-  }, [artifact.fileId, artifact.previewFileId, artifact.format, Boolean(draft), isWebOrSheet, retry, t]);
+  }, [sourceId, kind, retry, t]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -152,7 +163,7 @@ export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }:
 
   return <aside ref={panelRef} className={`artifact-preview${isFullscreen || fullscreenFallback ? ' is-fullscreen' : ''}`} aria-label={t('preview.title')}>
     <header className="artifact-preview-head">
-      <div><span className="artifact-preview-label">{t('preview.title')} · {artifact.format === 'xlsx' ? 'Excel' : artifact.format.toUpperCase()}</span><strong>{artifact.fileName}</strong></div>
+      <div><span className="artifact-preview-label">{t('preview.title')} · {formatLabel(artifact)}</span><strong>{artifact.fileName}</strong></div>
       <div className="artifact-preview-head-actions">
         <button type="button" onClick={() => void toggleFullscreen()} aria-label={isFullscreen || fullscreenFallback ? t('preview.exitFullscreen') : t('preview.openFullscreen')} title={isFullscreen || fullscreenFallback ? t('preview.exitFullscreen') : t('preview.openFullscreen')}>
           {isFullscreen || fullscreenFallback ? '↙' : '⛶'}
@@ -171,18 +182,22 @@ export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }:
       <span>{draft.status === 'generating' ? t('preview.generating') : draft.status === 'saving' ? t('preview.saving') : draft.status === 'cancelled' ? t('preview.cancelled') : t('preview.failed')}</span>
       <small>{t('preview.unsaved')}</small>
     </div>}
-    <div className={`artifact-preview-body${artifact.format === 'html' ? ' artifact-preview-body--html' : ''}`} ref={hostRef} aria-busy={Boolean(previewId && rendering && !error)}>
-      {draft ? <DraftContent draft={draft} /> : artifact.format === 'png' ? <ImagePreview key={`${artifact.fileId}:${retry}`} artifact={artifact} /> : isWebOrSheet ? (
+    <div className={`artifact-preview-body${kind === 'html' ? ' artifact-preview-body--html' : ''}`} ref={hostRef} aria-busy={Boolean(previewId && rendering && !error)}>
+      {draft ? <DraftContent draft={draft} /> : kind === 'image' ? <ImagePreview key={`${artifact.fileId}:${retry}`} artifact={artifact} /> : renders ? (
         fileError ? <div className="artifact-preview-error" role="alert"><p>{fileError}</p><button type="button" onClick={() => setRetry(value => value + 1)}>{t('preview.retry')}</button></div>
         : !fileContent ? <p role="status">{t('preview.loading')}</p>
-        : artifact.format === 'html' ? <HtmlPreview content={fileContent.html || ''} /> : <SheetPreview sheets={fileContent.sheets} />
-      ) : !previewId ? <p>{t('preview.unavailable')}</p> : error ?
-        <div className="artifact-preview-error" role="alert"><p>{t('preview.loadError')}</p><small>{error}</small><button onClick={() => setRetry(value => value + 1)} type="button">{t('preview.retry')}</button></div> : <>
-          {rendering && <p className="artifact-preview-loading" role="status">{t('preview.loadingPage')}</p>}
-          <canvas ref={canvasRef} style={{ visibility: rendering ? 'hidden' : 'visible' }} role="img" aria-label={t('preview.pageLabel', { name: artifact.fileName, page })} />
-        </>}
+        : kind === 'html' ? <HtmlPreview content={fileContent.html || ''} />
+        : kind === 'sheets' ? <SheetPreview sheets={fileContent.sheets || []} />
+        : kind === 'slides' ? <SlidePreview slides={fileContent.slides || []} />
+        : <DocumentPreview paragraphs={fileContent.paragraphs || []} />
+      ) : kind === 'pdf' ? (error ?
+          <div className="artifact-preview-error" role="alert"><p>{t('preview.loadError')}</p><small>{error}</small><button onClick={() => setRetry(value => value + 1)} type="button">{t('preview.retry')}</button></div> : <>
+            {rendering && <p className="artifact-preview-loading" role="status">{t('preview.loadingPage')}</p>}
+            <canvas ref={canvasRef} style={{ visibility: rendering ? 'hidden' : 'visible' }} role="img" aria-label={t('preview.pageLabel', { name: artifact.fileName, page })} />
+          </>)
+        : <div className="artifact-preview-error"><p>{t('preview.unsupported')}</p></div>}
     </div>
-    {!draft && !isWebOrSheet && artifact.format !== 'png' && <footer className="artifact-preview-footer">
+    {!draft && kind === 'pdf' && <footer className="artifact-preview-footer">
       <div className="artifact-preview-zoom">
         <button type="button" aria-label={t('preview.zoomOut')} disabled={zoom <= 1} onClick={() => setZoom(value => Math.max(1, value - 0.25))}>−</button>
         <button type="button" onClick={() => setZoom(1)} aria-label={t('preview.fitWidth')}>{Math.round(zoom * 100)}%</button>
@@ -195,7 +210,7 @@ export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }:
       </nav>
       <small>{isSlides ? t('preview.slideNote') : t('preview.pdfNote')}</small>
     </footer>}
-    {artifact.format === 'html' && <div className="artifact-preview-html-note">{t('preview.htmlNote')}</div>}
+    {kind === 'html' && <div className="artifact-preview-html-note">{t('preview.htmlNote')}</div>}
   </aside>;
 }
 

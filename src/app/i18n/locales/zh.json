@@ -349,5 +349,11 @@
   "record.importHeading": "选择会话备份",
   "record.importHint": "支持 JSON 格式，导入后会与现有记录合并",
   "record.importReady": "已读取 {count} 个会话",
-  "record.importMergeHint": "确认后将合并到当前浏览器中的记录"
+  "record.importMergeHint": "确认后将合并到当前浏览器中的记录",
+  "preview.slideNumber": "第 {page} 页",
+  "preview.emptySlides": "这份演示文稿里没有可读取的文字。",
+  "preview.emptyDocument": "这份文档里没有可读取的文字。",
+  "preview.invalidSlides": "演示文稿预览内容已损坏。",
+  "preview.invalidDocument": "文档预览内容已损坏。",
+  "preview.unsupported": "这种格式暂时无法预览，可下载后用本地应用打开。"
 }

@@ -47,13 +47,23 @@ export interface AgentResult {
   memoryMessages: number;
 }
 
+export type ArtifactFormat =
+  | 'pdf' | 'xlsx' | 'pptx' | 'docx' | 'html' | 'htm'
+  | 'png' | 'jpg' | 'jpeg' | 'gif' | 'webp' | string;
+
+// What the server could read out of the file: a deck is delivered as its slides,
+// a spreadsheet as its sheets, a document as its paragraphs. Anything else has to
+// be rendered from the bytes themselves, or not at all.
+export type ArtifactPreviewKind = 'pdf' | 'image' | 'html' | 'sheets' | 'slides' | 'document' | 'none';
+
 export interface AgentArtifact {
   toolCallId?: string;
   draft?: AgentPreview;
   fileId: string;
   fileName: string;
-  format: 'pdf' | 'xlsx' | 'pptx' | 'html' | 'png';
+  format: ArtifactFormat;
   previewFileId?: string;
+  previewKind?: ArtifactPreviewKind;
   pageCount?: number;
   mimeType: string;
   size: number;

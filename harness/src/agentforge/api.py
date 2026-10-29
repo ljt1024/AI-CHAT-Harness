@@ -336,11 +336,18 @@ def create_app(settings=None, store=None, gateway=None):
         if record is None:
             raise HTTPException(404, "File not found.")
         artifact = record["artifact"]
-        return Response(bytes(record["content"]), media_type="text/html", headers={
+        mime = artifact.get("mimeType") or "application/octet-stream"
+        headers = {
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(artifact['fileName'], safe='')}",
             "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
-            "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
-        })
+        }
+        # Generated HTML is the one delivery the browser is allowed to render, and
+        # only inside a sandbox; a PDF or an image is rendered by our own viewer
+        # from bytes that never get to act as a document of their own.
+        if mime == "text/html":
+            headers["Content-Security-Policy"] = (
+                "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:")
+        return Response(bytes(record["content"]), media_type=mime, headers=headers)
 
     @app.get("/api/skills")
     async def list_skills():

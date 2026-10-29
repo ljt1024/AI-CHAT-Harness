@@ -349,5 +349,11 @@
   "record.importHeading": "Choose a conversation backup",
   "record.importHint": "JSON files are supported and will be merged with your existing records",
   "record.importReady": "{count} conversations ready",
-  "record.importMergeHint": "Confirm to merge them into this browser's records"
+  "record.importMergeHint": "Confirm to merge them into this browser's records",
+  "preview.slideNumber": "Page {page}",
+  "preview.emptySlides": "This deck has no text to read.",
+  "preview.emptyDocument": "This document has no text to read.",
+  "preview.invalidSlides": "The deck preview is unreadable.",
+  "preview.invalidDocument": "The document preview is unreadable.",
+  "preview.unsupported": "This format cannot be previewed yet; download it to open it locally."
 }

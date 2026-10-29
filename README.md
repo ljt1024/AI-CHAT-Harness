@@ -143,7 +143,13 @@ curl -s localhost:8000/api/mcp/servers/import -H 'content-type: application/json
 
 ### 产物与预览
 
-`write_file` 产出的 PDF / Excel / PPT / HTML / PNG 会连同本地 CSS、JS、图片打包为不可变产物存储，可下载、可在应用内预览（HTML 预览为净化环境，不执行脚本）。单个 HTML 2 MB、每轮 20 个条目（见 [ADR-0012](docs/adr/0012-workspace-writes-and-html-delivery.md)）。
+工作区里可预览的文件——HTML、PDF、Excel、PPT、Word 与图片（png/jpg/gif/webp）——会在每轮结束时打包为不可变产物存储，可下载、可在应用内直接预览：
+
+- **HTML** 连同本地 CSS、JS、图片打包，预览为净化环境，不执行脚本；
+- **PDF** 在浏览器内分页渲染（pdf.js），**图片** 原样显示；
+- **Excel / PPT / Word** 不要求浏览器能打开 Office：后端用标准库读出内容——表格、每页幻灯片的标题与要点、文档段落——浏览器按这份只读视图预览，原文件照常下载。
+
+单个文件 2 MB、每轮 20 个条目（图片至多 6 张，免得成批图表把真正的交付物挤出名单）；内容未变的文件不重复入库，只在新的消息下再挂一张卡。凡是写文件或跑过命令的轮次结束时都会扫描工作区（见 [ADR-0012](docs/adr/0012-workspace-writes-and-html-delivery.md)）。
 
 ### 前端流式体验
 

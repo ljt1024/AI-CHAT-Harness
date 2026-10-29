@@ -38,3 +38,22 @@ Unit tests cover bounded bundling, Chinese text, workspace/credential/internal p
 symlink escape, file tracking and denied writes. API tests cover host and real Docker HTML/CSS/JS
 generation without approval prompts, download headers/content, unknown files, and persistence
 across app restart. Explicit confirm policies and shell/MCP/install approvals remain covered.
+
+## Amendment (2026-10-29): delivery covers the document formats, not just HTML
+
+A PDF the agent rendered or a deck it built stayed invisible: only `.html/.htm`
+made the trip. The delivery now covers every format the browser can show one way
+or another -- PDF pages via pdf.js, images as they are, and the Office formats
+through a bounded read of their content (sheets, slides with titles and points,
+document paragraphs) extracted in `previews.py` with nothing beyond `zipfile`
+and `ElementTree`, because the sandbox has no network to install `openpyxl` or
+`python-pptx` with.
+
+The scan in `done` now walks the whole workspace for these suffixes, newest
+first; images are capped at 6 per turn so a batch of charts cannot crowd the
+deck out. A file whose bytes are unchanged since an earlier turn is delivered by
+reference -- the card reappears under the newer message pointing at the stored
+delivery, and nothing is stored twice. The download endpoint now sends each
+delivery under its real MIME type, and the sandbox CSP applies to HTML only;
+PDF and images are rendered by our viewer from bytes that never act as a
+document of their own.
