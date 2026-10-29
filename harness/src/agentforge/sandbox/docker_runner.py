@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+import json
 import logging
 import os
 from pathlib import Path
@@ -30,10 +31,24 @@ class Sandbox:
     alive: bool = True
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class DockerRunner:
-    def __init__(self, root: Path, client=None):
+    def __init__(self, root: Path, client=None, instance: str | None = None):
         self.root = root.resolve()
         self.client = client
+        # Tells this process's containers apart from a predecessor's: both carry the
+        # managed label, and only the instance file says whether the owner still runs.
+        self.instance = instance or new_id()
+        self.state_dir = self.root.parent / "instances"
         self._connect_lock = asyncio.Lock()
 
     async def connect(self):
@@ -63,7 +78,7 @@ class DockerRunner:
             "environment": {**{entry.split("=", 1)[0]: None for entry in image_environment},
                             "PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp",
                             "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"},
-            "labels": {"agentforge.managed": "true"},
+            "labels": {"agentforge.managed": "true", "agentforge.instance": self.instance},
             "log_config": docker.types.LogConfig(type="json-file", config={"max-size": "1m", "max-file": "1"}),
         }
 
@@ -111,6 +126,40 @@ class DockerRunner:
             logger.warning("Could not remove sandbox workspace %s: %s", root.name, exc)
             return False
 
+    def register(self) -> None:
+        """Announce this process, so a survivor can tell its containers from mine."""
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / f"{self.instance}.json").write_text(
+            json.dumps({"pid": os.getpid(), "startedAt": time.time()}))
+
+    def unregister(self) -> None:
+        try:
+            (self.state_dir / f"{self.instance}.json").unlink()
+        except OSError:
+            pass
+
+    def live_instances(self) -> set[str]:
+        """Instance IDs whose process is still running; stale files are removed."""
+        live: set[str] = set()
+        if not self.state_dir.is_dir():
+            return live
+        for path in self.state_dir.glob("*.json"):
+            if path.stem == self.instance:
+                live.add(path.stem)
+                continue
+            try:
+                pid = int(json.loads(path.read_text())["pid"])
+            except (OSError, ValueError, KeyError, TypeError):
+                pid = -1
+            if pid > 0 and _pid_alive(pid):
+                live.add(path.stem)
+            else:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+        return live
+
     async def sweep(self, force: bool = False, min_age_seconds: float = 600, keep=()) -> dict:
         """Remove containers and directories a previous process left behind.
 
@@ -119,9 +168,11 @@ class DockerRunner:
         Running containers are only touched with force: another backend on this
         machine can legitimately own them.
         """
+        self.register()
         client = await self.connect()
         removed = {"containers": 0, "workspaces": 0, "keptRunning": 0}
         in_use: set[Path] = set()
+        live = self.live_instances() if not force else set()
         containers = await asyncio.to_thread(
             client.containers.list, all=True, filters={"label": "agentforge.managed=true"})
         for container in containers:
@@ -129,8 +180,12 @@ class DockerRunner:
                 if mount.get("Source"):
                     in_use.add(Path(mount["Source"]).resolve())
             if getattr(container, "status", "") == "running" and not force:
-                removed["keptRunning"] += 1
-                continue
+                owner = (getattr(container, "labels", None) or {}).get("agentforge.instance")
+                # A running container is only a leftover when its owner is known to be
+                # gone. No owner label means a container from before this feature.
+                if owner is None or owner in live:
+                    removed["keptRunning"] += 1
+                    continue
             try:
                 await asyncio.to_thread(container.remove, force=True)
                 removed["containers"] += 1

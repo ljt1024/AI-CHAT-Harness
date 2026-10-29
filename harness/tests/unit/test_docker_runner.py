@@ -96,6 +96,7 @@ async def test_sweep_removes_exited_containers_and_stale_directories(tmp_path):
     os.utime(mounted, (0, 0))  # old, so only the mount keeps it alive
     alive.status = "running"
     alive.attrs = {"Mounts": [{"Source": str(mounted)}]}
+    alive.labels = {}
     client.containers.list.return_value = [dead, alive]
     stale = tmp_path / "stale"
     stale.mkdir()
@@ -115,3 +116,30 @@ async def test_sweep_removes_exited_containers_and_stale_directories(tmp_path):
     assert fresh.is_dir(), "a directory younger than the threshold may be mid-creation"
     dead.remove.assert_called_once_with(force=True)
     alive.remove.assert_not_called()
+
+
+async def test_sweep_removes_containers_whose_owner_is_gone(tmp_path):
+    """A killed backend leaves containers running; only the instance file says so."""
+    import os
+    client = MagicMock()
+    mine, orphan, stranger = MagicMock(), MagicMock(), MagicMock()
+    for container in (mine, orphan, stranger):
+        container.status, container.attrs, container.labels = "running", {"Mounts": []}, {}
+    runner = DockerRunner(tmp_path, client, instance="mine")
+    runner.state_dir.mkdir(parents=True, exist_ok=True)
+    # "mine" is this process; "stranger" is another live backend; "orphan" is dead.
+    (runner.state_dir / "stranger.json").write_text(json.dumps({"pid": os.getpid()}))
+    (runner.state_dir / "orphan.json").write_text(json.dumps({"pid": 999999}))
+    mine.labels = {"agentforge.instance": "mine"}
+    orphan.labels = {"agentforge.instance": "orphan"}
+    stranger.labels = {"agentforge.instance": "stranger"}
+    client.containers.list.return_value = [mine, orphan, stranger]
+
+    removed = await runner.sweep()
+
+    assert removed["containers"] == 1 and removed["keptRunning"] == 2
+    orphan.remove.assert_called_once_with(force=True)
+    mine.remove.assert_not_called()
+    stranger.remove.assert_not_called()
+    assert not (runner.state_dir / "orphan.json").exists(), "a dead instance file is dropped"
+    assert (runner.state_dir / "stranger.json").exists(), "a live backend keeps its claim"

@@ -236,3 +236,8 @@ class SandboxPool:
         if self.background:
             await asyncio.gather(self.background, return_exceptions=True)
         await asyncio.gather(*(self._destroy(e) for e in list(self.entries.values())))
+        # Withdraw the instance file last: until the containers above are gone, a
+        # starting successor must still treat this process as live.
+        unregister = getattr(self.runner, "unregister", None)
+        if unregister is not None:
+            unregister()
