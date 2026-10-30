@@ -14,6 +14,7 @@ from agentforge.sandbox.docker_runner import DockerRunner
 from agentforge.skill_sources import SkillSource
 from agentforge.skills import SkillManager, SkillTool
 from agentforge.store import MongoDBStore
+from helpers import AuthedClient, TEST_PASSWORD
 
 
 @pytest.mark.parametrize("approved", [True, False])
@@ -46,13 +47,15 @@ async def test_install_approval_precedes_download_and_catalog_changes(tmp_path, 
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
     gateway = ModelGateway()
     gateway.register("deepseek", InstallThenList())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path,
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
                               sandbox_warm_size=0), store, gateway)
     async with app.router.lifespan_context(app):
-        await store.put("sessions", {"id": "install", "history": [
-            {"role": "user", "content": "Can you install skills?"},
-            {"role": "assistant", "content": "No. I only have list_skills and load_skill."}]})
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            owner = (await client.get("/api/auth/me")).json()["data"]["id"]
+            await store.put("sessions", {"id": "install", "history": [
+                {"role": "user", "content": "Can you install skills?"},
+                {"role": "assistant", "content": "No. I only have list_skills and load_skill."}]},
+                owner=owner)
             run = asyncio.create_task(client.post("/api/agents/run", json={
                 "input": "Install the specified skill", "sessionId": "install", "stream": True}))
             try:
@@ -129,10 +132,10 @@ async def test_agent_can_install_load_and_run_in_one_task(tmp_path, docker_clien
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
     gateway = ModelGateway()
     gateway.register("deepseek", InstallLoadRun())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path,
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
                               sandbox_warm_size=0), store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             run = asyncio.create_task(client.post("/api/agents/run", json={
                 "input": "Create, install and run the specified skill", "sessionId": "install-run",
                 "sandbox": True, "stream": True}))

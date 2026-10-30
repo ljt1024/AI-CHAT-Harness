@@ -3,6 +3,22 @@ export function apiUrl(path: string): string {
   return new URL(`/api${path}`, new URL(base, window.location.origin)).toString();
 }
 
+/**
+ * Fired whenever the server answers 401. The auth provider listens and drops the
+ * UI back to the login form; without this, an expired cookie leaves a page that
+ * looks alive but silently fails every action.
+ */
+export const UNAUTHORIZED_EVENT = 'agentforge:unauthorized';
+
+export function notifyUnauthorized() {
+  window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+}
+
+export function watchAuth(response: Response): Response {
+  if (response.status === 401) notifyUnauthorized();
+  return response;
+}
+
 export async function consumeSSE<T>(
   response: Response,
   onEvent: (event: T) => void,
@@ -47,6 +63,7 @@ export async function consumeSSE<T>(
 export function postJSON(path: string, body: unknown, headers: HeadersInit, signal?: AbortSignal) {
   return fetch(apiUrl(path), {
     method: 'POST', signal, headers: { ...headers, 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
     body: JSON.stringify(body),
-  });
+  }).then(watchAuth);
 }

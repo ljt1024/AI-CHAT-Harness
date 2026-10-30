@@ -9,6 +9,7 @@ from agentforge.gateway.base import ContentDelta, Done, ToolCallRequest
 from agentforge.gateway.registry import ModelGateway
 from agentforge.models import RunResult, ToolCall
 from agentforge.store import MongoDBStore
+from helpers import AuthedClient, TEST_PASSWORD
 
 
 def make_store():
@@ -49,10 +50,10 @@ async def test_run_endpoint_can_resume_from_a_checkpoint(tmp_path, monkeypatch):
     monkeypatch.setattr(api.Runtime, "run", fake_run)
     gateway = ModelGateway()
     gateway.register("deepseek", Answer())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0),
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0),
                      make_store(), gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+        async with AuthedClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
             for index, resume in enumerate((False, True)):
                 response = await client.post("/api/agents/run", json={
@@ -66,10 +67,10 @@ async def test_run_endpoint_can_resume_from_a_checkpoint(tmp_path, monkeypatch):
 async def test_health_reports_every_dependency(tmp_path):
     gateway = ModelGateway()
     gateway.register("deepseek", Answer())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0),
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0),
                      make_store(), gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             payload = (await client.get("/health")).json()
     assert payload["mode"] == "runtime"
     assert payload["database"] is True
@@ -94,10 +95,10 @@ async def test_session_can_be_stopped_and_pending_approval_released(tmp_path):
     store = make_store()
     gateway = ModelGateway()
     gateway.register("deepseek", AskThenAnswer())
-    settings = Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0)
+    settings = Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0)
     app = create_app(settings, store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             created = await client.post("/api/agents", json={"name": "Shell", "tools": ["run_command"],
                 "permissions": {"run_command": "confirm"}})
             assert created.status_code == 201
@@ -124,12 +125,12 @@ async def test_session_context_reads_the_committed_reading(tmp_path):
     store = make_store()
     gateway = ModelGateway()
     gateway.register("deepseek", Answer())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0),
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0),
                      store, gateway)
     async with app.router.lifespan_context(app):
         await store.put("sessions", {"id": "kept", "sessionId": "kept",
                                      "context": {"tokens": 1234, "window": 64000}})
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             assert (await client.get("/api/sessions/kept/context")).json()["data"] == \
                 {"tokens": 1234, "window": 64000}
             # A session that never ran has no reading; the caller hides the gauge.
@@ -141,10 +142,10 @@ async def test_session_context_reads_the_committed_reading(tmp_path):
 async def test_stopping_unknown_session_is_404(tmp_path):
     gateway = ModelGateway()
     gateway.register("deepseek", Answer())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0),
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0),
                      make_store(), gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             assert (await client.post("/api/sessions/nope/stop")).status_code == 404
 
 
@@ -152,10 +153,10 @@ async def test_session_delete_removes_derived_data(tmp_path):
     gateway = ModelGateway()
     gateway.register("deepseek", Answer())
     store = make_store()
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0),
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0),
                      store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             created = await client.post("/api/agents", json={"name": "Chat", "tools": []})
             assert created.status_code == 201
             agent_id = created.json()["data"]["id"]
@@ -178,10 +179,10 @@ async def test_finished_runs_stay_bounded(tmp_path):
     gateway = ModelGateway()
     gateway.register("deepseek", Answer())
     store = make_store()
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0),
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0),
                      store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             created = await client.post("/api/agents", json={"name": "Chat", "tools": []})
             agent_id = created.json()["data"]["id"]
             oldest = None
@@ -196,12 +197,16 @@ async def test_finished_runs_stay_bounded(tmp_path):
 
 
 async def test_approvals_endpoint_survives_database_outage(tmp_path):
-    """Listing pending approvals is in-memory and must not 503 with Mongo down."""
+    """Pending approvals are in-memory, so an already-authenticated caller keeps
+    seeing them after the database goes away mid-run; identity cannot be
+    re-checked from Mongo, but it was checked when the session was established."""
     gateway = ModelGateway()
     gateway.register("deepseek", Answer())
     store = make_store()
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0),
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0),
                      store, gateway)
-    app.state.ready = False
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-        assert (await client.get("/api/approvals")).status_code == 200
+    async with app.router.lifespan_context(app):
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            assert (await client.get("/api/approvals")).status_code == 200
+            app.state.ready = False
+            assert (await client.get("/api/approvals")).status_code == 200

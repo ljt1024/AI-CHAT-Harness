@@ -42,6 +42,12 @@ MONGODB_URI=mongodb://localhost:27017
 AGENTFORGE_DB=agentforge
 AGENTFORGE_WORKSPACE=.agentforge/workspaces
 MCP_SERVER_URL=http://localhost:9000/mcp
+# 登录账号：启动时创建第一个账号；不设密码则无人能登录（所有 /api 返回 401）
+ADMIN_USER=admin
+ADMIN_PASSWORD=一个至少 10 位的密码
+# 可选：HTTPS 部署时设 true；额外放行的跨域写请求来源（逗号分隔）
+COOKIE_SECURE=false
+ALLOWED_ORIGINS=
 # 可选：日志级别与格式（text/json），MCP 发现与调用超时（秒）
 AGENTFORGE_LOG_LEVEL=INFO
 AGENTFORGE_LOG_FORMAT=text
@@ -84,6 +90,14 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 - **前端不引用任何外网资源**：`@import` Google Fonts 已移除——样式表在不可达网络下会永远 pending，而 deferred module 脚本要等样式表加载完才执行，结果就是整站白屏且无任何报错。字体走 `:root` 里的系统栈（PingFang SC / Noto Sans SC）。
 
 ## 核心能力
+
+### 账号与登录
+
+每个 `/api` 请求（`/api/auth/*`、`/health` 除外）都要先登录。启动时若设置了 `ADMIN_USER` 与 `ADMIN_PASSWORD`，服务会创建第一个账号——从不"谁先来谁注册"。登录成功后浏览器只拿到一枚 HttpOnly、SameSite=Lax 的 Cookie；会话本体在 MongoDB 里，登出、过期和撤号都会让它失效。密码用 `hashlib.scrypt` 加盐哈希，登录失败有按账号的限流锁定。
+
+授权模型：资源（智能体、会话、轨迹、产物、技能、MCP 服务）都带 `owner_id`，读取、续跑、审批、订阅 SSE、下载文件全部按调用者过滤，别人的资源返回 404——既不能访问，也无法确认它存在。内置的 `default` 智能体是共享只读的，任何人可以运行但不能占据这个 id。写请求额外校验 Origin（反代场景认 `X-Forwarded-Host`，或用 `ALLOWED_ORIGINS` 显式放行）。
+
+前端自动跳登录页，401 会把整页带回登录表单；侧边栏底部有账号与退出。
 
 ### 智能体循环：思考 → 行动 → 观察
 
@@ -226,11 +240,17 @@ uv run ruff check src tests     # 后端 lint
 uv run pytest tests -q          # 后端全量测试（含真实 Docker / MongoDB 用例）
 ```
 
+登录链路可以在真实浏览器里验证（需要后端已用 `ADMIN_PASSWORD` 启动、前端 dev 服务在跑）：
+
+```bash
+/usr/bin/python3 scripts/verify_auth_flow.py --password <管理密码>
+```
+
 Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验证脚本位于 `scripts/`，部分会调用真实模型并产生费用。
 
 ## 边界与限制
 
-- 面向**可信单用户、本地回环**的开发运行时，**尚未实现认证与多租户隔离**；对外暴露前必须在部署层加访问控制（下一阶段 M2A / T15.A1-A4）。
+- 所有 `/api` 请求都需要登录（`/api/auth/*` 与 `/health` 除外）。首个账号由 `ADMIN_USER` / `ADMIN_PASSWORD` 在启动时创建，会话是可撤销的服务端记录，浏览器只持有 HttpOnly Cookie。身份只能来自这个 Cookie——请求体、工具参数或模型输出都无法指定用户。跨用户的资源统一返回 404，工作区按会话命名的拆分（T15.A3）仍未做。
 - 受限工具不等于 Docker 安全边界，真正隔离由沙箱提供。
 - 尚未提供通用联网搜索；命令执行只在**离线** Docker 沙箱内进行，不能访问外网。远程 MCP 是唯一出网路径：它不进沙箱，在宿主网络里、带着服务令牌调用，所以其风险由「远端注解 + 审批」承担，而不是由沙箱承担。
 - 产物预览为净化环境，交互脚本只在下载后的文件中运行。

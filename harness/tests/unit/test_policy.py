@@ -15,6 +15,7 @@ from agentforge.policy import InterventionPolicy
 from agentforge.store import MongoDBStore
 from agentforge.tools.ask import AskUserTool
 from agentforge.tools.fs import FileTool, Workspace
+from helpers import AuthedClient, TEST_PASSWORD
 
 
 def make_store():
@@ -318,10 +319,10 @@ async def test_ask_user_reaches_the_model_end_to_end(tmp_path):
     adapter = AskThenAnswer()
     gateway = ModelGateway()
     gateway.register("deepseek", adapter)
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path,
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
                               sandbox_warm_size=0), make_store(), gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+        async with AuthedClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
             created = await client.post("/api/agents", json={"name": "Asker", "tools": ["ask_user"]})
             agent_id = created.json()["data"]["id"]
@@ -338,10 +339,10 @@ async def test_ask_user_reaches_the_model_end_to_end(tmp_path):
 
 
 async def test_policy_endpoint_explains_every_intervention(tmp_path):
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path,
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
                               sandbox_warm_size=0), make_store(), ModelGateway())
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+        async with AuthedClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
             response = await client.get("/api/interventions/policy")
     assert response.status_code == 200

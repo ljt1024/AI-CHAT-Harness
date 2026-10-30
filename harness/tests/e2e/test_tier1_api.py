@@ -12,6 +12,7 @@ from agentforge.gateway.base import ContentDelta, Done, ModelOutputError, ToolCa
 from agentforge.gateway.registry import ModelGateway
 from agentforge.models import ToolCall
 from agentforge.store import MongoDBStore
+from helpers import AuthedClient, TEST_PASSWORD
 
 
 class WriteThenFinish:
@@ -39,10 +40,10 @@ async def test_create_run_approve_and_trace(tmp_path, approved, isolated):
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
     gateway = ModelGateway()
     gateway.register("deepseek", WriteThenFinish())
-    settings = Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0)
+    settings = Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0)
     app = create_app(settings, store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             created = await client.post("/api/agents", json={"name": "Write report", "tools": ["write_file"],
                 "permissions": {"write_file": "confirm"},
                 "sandbox_policy": {} if isolated else None})
@@ -85,9 +86,9 @@ async def test_legacy_and_plain_chat(tmp_path):
     gateway = ModelGateway()
     gateway.register("deepseek", Answer())
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path), store, gateway)
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path), store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post("/api/agents/run", json={"input": "hello", "sessionId": "s1", "turnId": "t1", "stream": True})
             events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
             assert events[0]["type"] == "start"
@@ -106,10 +107,10 @@ async def test_plain_chat_length_limit_is_a_terminal_actionable_error(tmp_path):
 
     gateway = ModelGateway()
     gateway.register("deepseek", Incomplete())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0),
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0),
                      MongoDBStore("", "test", client=AsyncMongoMockClient()), gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             result = await client.post("/api/chat/completions", json={
                 "messages": [{"role": "user", "content": "编写一个很长的页面"}]})
             assert "data: [DONE]" not in result.text
@@ -132,10 +133,10 @@ async def test_chat_provider_failures_are_terminal_sse_errors(tmp_path, status):
     gateway = ModelGateway()
     gateway.register("deepseek", Failure())
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path,
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
                               sandbox_warm_size=0), store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post("/api/chat/completions", json={
                 "messages": [{"role": "user", "content": "hello"}]})
             events = [json.loads(line[6:]) for line in response.text.splitlines()

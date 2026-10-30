@@ -9,6 +9,10 @@ import docker
 from docker.errors import DockerException
 import pytest
 
+# `helpers.py` lives beside this file, and importlib mode does not put the tests
+# directory on the path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 # Tests must never read the developer's real MCP startup file: it holds bearer
 # tokens, and every entry it lists costs a discovery round trip each time a
 # lifespan starts, which would make the suite depend on a hosted service.

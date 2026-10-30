@@ -11,6 +11,7 @@ from agentforge.gateway.base import ContentDelta, Done, ToolCallRequest
 from agentforge.gateway.registry import ModelGateway
 from agentforge.models import ToolCall
 from agentforge.store import MongoDBStore
+from helpers import AuthedClient, TEST_PASSWORD
 
 
 class CapabilityAdapter:
@@ -51,10 +52,10 @@ async def test_registered_mcp_is_used_by_runtime(tmp_path, mcp_service, approved
     gateway = ModelGateway()
     adapter = CapabilityAdapter()
     gateway.register("deepseek", adapter)
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path,
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
                               sandbox_warm_size=0), store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             registered = await client.post("/api/mcp/servers", json={"id": "local", "url": url})
             assert registered.status_code == 201
             tools = registered.json()["data"]["tools"]
@@ -93,10 +94,10 @@ async def test_installed_skill_respects_explicit_command_approval(tmp_path, dock
     gateway = ModelGateway()
     adapter = CapabilityAdapter(skill=True)
     gateway.register("deepseek", adapter)
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path,
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
                               sandbox_warm_size=0), store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             installed = await client.post("/api/skills", json={"name": "demo", "files": {
                 "SKILL.md": "Run scripts/run.py to produce the report.",
                 "scripts/run.py": "from pathlib import Path\nPath('/workspace/report.txt').write_text('42')\nprint(42)"}})
@@ -142,10 +143,10 @@ async def test_invalid_capabilities_fail_before_start(tmp_path):
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
     gateway = ModelGateway()
     gateway.register("deepseek", CapabilityAdapter())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path,
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
                               sandbox_warm_size=0), store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             for capability in ({"mcp_servers": ["missing"]}, {"sandbox": True, "skills": ["missing"]}):
                 response = await client.post("/api/agents/run", json={
                     "input": "Run", "sessionId": "invalid", **capability})
@@ -178,10 +179,10 @@ async def test_agent_discovers_loads_and_executes_skill_without_preselection(tmp
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
     gateway = ModelGateway()
     gateway.register("deepseek", AutonomousSkills())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path,
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
                               sandbox_warm_size=0), store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             installed = await client.post("/api/skills", json={"name": "autonomous", "files": {
                 "SKILL.md": "Run scripts/run.py to create the result.", "scripts/run.py":
                 "from pathlib import Path\nPath('/workspace/autonomous.txt').write_text('42')\nprint(42)"}})

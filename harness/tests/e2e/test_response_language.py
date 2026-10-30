@@ -11,6 +11,7 @@ from agentforge.gateway.registry import ModelGateway
 from agentforge.models import ToolCall
 from agentforge.prompts import RESPONSE_LANGUAGE_POLICY
 from agentforge.store import MongoDBStore
+from helpers import AuthedClient, TEST_PASSWORD
 
 
 @pytest.mark.parametrize("agent_mode", [False, True])
@@ -36,13 +37,16 @@ async def test_language_policy_reaches_every_model_call(tmp_path, agent_mode, pr
     gateway = ModelGateway()
     gateway.register("deepseek", Capture())
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path,
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
                               sandbox_warm_size=0), store, gateway)
     history = [{"role": "user", "content": "What can you do?"},
                {"role": "assistant", "content": "I can help you install skills."}]
     async with app.router.lifespan_context(app):
-        await store.put("sessions", {"id": "language-test", "history": history})
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            # A resumed conversation belongs to the account that owns it, so the
+            # fixture creates it as that account rather than anonymously.
+            owner = (await client.get("/api/auth/me")).json()["data"]["id"]
+            await store.put("sessions", {"id": "language-test", "history": history}, owner=owner)
             if agent_mode:
                 response = await client.post("/api/agents/run", json={
                     "sessionId": "language-test", "input": prompt, "stream": True})

@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Navigate, Routes, Route } from 'react-router-dom';
 import ChatAI from './features/chat/index.tsx'
+import AuthGate from './features/auth/AuthGate.tsx'
 import ShareMsg from './pages/ShareMsg/index.tsx'
 
 function App() {
@@ -8,7 +9,7 @@ function App() {
       <Router>
         <Routes>
           <Route path="/" element={<Navigate to="/ai" replace />} />
-          <Route path="/ai" element={<ChatAI />} />
+          <Route path="/ai" element={<AuthGate><ChatAI /></AuthGate>} />
           <Route path="/share" element={<ShareMsg />} />
         </Routes>
       </Router>

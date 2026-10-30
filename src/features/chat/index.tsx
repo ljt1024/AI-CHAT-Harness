@@ -8,6 +8,7 @@ import Dialog from '@/shared/components/Dialog';
 import ChatInputControl from '@/shared/components/ChatInputControl';
 import ArrowDownIcon from '@/shared/assets/arrowDown.svg?react';
 import { useChat, useChatDispatch } from '@/app/providers/ChatContext';
+import { useAuth } from '@/app/providers/AuthContext';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import { newChat, storageMessages, ensureAgentTurnId, removeLastAssistantMessage, Message, getSelectId, getMessageByCovId } from '@/shared/utils/localMessages'
 import { MODEL_STORAGE_KEY, SHOW_SANDBOX_AND_SKILLS_UI } from './constants';
@@ -66,6 +67,7 @@ const ChatAI: React.FC = () => {
   const streamLastPaintRef = useRef(0)
   const streamPendingMessageRef = useRef<Message | null>(null)
   const { t } = useLanguage()
+  const { user, signOut } = useAuth()
   const { messages } = useChat()
   const activeSessionId = getSelectId();
   // The runtime measures the live transcript; keep it per session so switching
@@ -713,6 +715,7 @@ const ChatAI: React.FC = () => {
       <div className={`chat-container${previewArtifact ? ' chat-container--preview' : ''}`}>
         <Sidebar
           isLoading={isLoading}
+          account={user ? { name: user.username, onSignOut: () => { void signOut() } } : undefined}
         />
         <div className="chat-workspace">
           {isBackendUnavailable && <div className="backend-banner" role="status">{t('chat.serverBusy')}</div>}

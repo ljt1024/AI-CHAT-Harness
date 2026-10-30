@@ -36,6 +36,20 @@ class Settings(BaseSettings):
     # otherwise give every session an arbitrary root filesystem of our choosing.
     sandbox_image: str = DEFAULT_SANDBOX_IMAGE
 
+    # Authentication. The service refuses every /api request without a session,
+    # so an empty password means "start up with nobody able to log in" rather
+    # than "let everyone in" - a deployment mistake should not become an open
+    # door. The first account is created only from these two values.
+    admin_user: str = "admin"
+    admin_password: SecretStr = SecretStr("")
+    session_hours: float = Field(default=12, gt=0, le=720)
+    # Cookies need Secure behind HTTPS; loopback development over plain HTTP
+    # cannot set it or the browser drops the cookie.
+    cookie_secure: bool = False
+    # Extra origins allowed for state-changing requests. Empty means "same origin
+    # only", which is what a single-host deployment needs.
+    allowed_origins: str = ""
+
     @field_validator("sandbox_image")
     @classmethod
     def _known_image(cls, value: str) -> str:

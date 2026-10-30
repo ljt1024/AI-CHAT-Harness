@@ -29,7 +29,10 @@ const timestamp = (item: CovIdListItem) => {
   return 0
 }
 
-export default function Sidebar({ isLoading }: { isLoading: boolean }) {
+export default function Sidebar({ isLoading, account }: {
+  isLoading: boolean;
+  account?: { name: string; onSignOut: () => void };
+}) {
   const { t, dateLocale } = useLanguage()
   const { covList } = useChat()
   const dispatch = useChatDispatch()
@@ -129,6 +132,11 @@ export default function Sidebar({ isLoading }: { isLoading: boolean }) {
           </section>)}
           {!groups.length && <p className="sidebar-empty">{query ? t('sidebar.noMatches') : t('sidebar.empty')}</p>}
         </nav>
+        {account && <div className="sidebar-account">
+          <span className="sidebar-avatar" aria-hidden="true">{account.name.slice(0, 1).toUpperCase()}</span>
+          <span className="sidebar-footer-label" title={t('auth.signedInAs', { name: account.name })}>{account.name}</span>
+          <button type="button" className="sidebar-signout" onClick={account.onSignOut} aria-label={t('auth.signOut')} title={t('auth.signOut')}>{t('auth.signOut')}</button>
+        </div>}
         <button type="button" className="sidebar-footer" disabled={isLoading} onClick={() => setRecords(true)} aria-label={t('sidebar.openManager')}>
           <span className="sidebar-avatar">AI</span><span className="sidebar-footer-label">{t('sidebar.myChats')}<small>{t('sidebar.count', { count: covList.length })}</small></span><SidebarIcon name="more" />
         </button>

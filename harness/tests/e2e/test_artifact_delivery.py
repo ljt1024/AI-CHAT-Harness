@@ -10,6 +10,7 @@ from agentforge.gateway.base import ContentDelta, Done, ToolCallRequest
 from agentforge.gateway.registry import ModelGateway
 from agentforge.models import ToolCall
 from agentforge.store import MongoDBStore
+from helpers import AuthedClient, TEST_PASSWORD
 
 
 class GenerateHtml:
@@ -31,10 +32,10 @@ async def test_html_delivery_without_approval_and_survives_restart(tmp_path, iso
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
     gateway = ModelGateway()
     gateway.register("deepseek", GenerateHtml())
-    settings = Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0)
+    settings = Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0)
     app = create_app(settings, store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             result = await client.post("/api/agents/run", json={"input": "生成一个HTML", "sessionId": "html-session", "stream": True, "sandbox": isolated})
             events = [json.loads(line[6:]) for line in result.text.splitlines() if line.startswith("data: ")]
             assert not any(e["type"] == "await_approval" for e in events)
@@ -52,6 +53,6 @@ async def test_html_delivery_without_approval_and_survives_restart(tmp_path, iso
     # A new app/process can still serve the immutable delivery after its container closes.
     app = create_app(settings, store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             persisted = await client.get(artifact["downloadPath"])
             assert persisted.content == response.content

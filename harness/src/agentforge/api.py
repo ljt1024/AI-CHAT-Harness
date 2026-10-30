@@ -9,12 +9,13 @@ import time
 from urllib.parse import quote
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import Response, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, StrictBool
 
 from agentforge.config import Settings
 from agentforge.artifacts import ArtifactEventBus
+from agentforge.auth import SESSION_COOKIE, AuthError, AuthService, current_user
 from agentforge.capabilities import (MCPServerRequest, MAX_CONFIG, parse_config, parse_servers,
                                      public_server, run_servers, server_tools)
 from agentforge.context import ContextManager
@@ -79,6 +80,11 @@ class MCPConfig(BaseModel):
 
 class MCPToggle(BaseModel):
     enabled: bool
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=200)
 
 
 class SandboxFile(BaseModel):
@@ -179,6 +185,7 @@ def create_app(settings=None, store=None, gateway=None):
     isolated_tools = {}
     run_sandboxes = {}
     skill_manager = SkillManager(store)
+    auth = AuthService(store, session_hours=settings.session_hours)
 
     def tools_factory(session_id):
         if session_id in isolated_tools:
@@ -212,6 +219,10 @@ def create_app(settings=None, store=None, gateway=None):
 
     runtime.permission_check = permission_check
     runs = {}
+    # Session id -> account that started it. Runs and finished-run buses live in
+    # memory, so this is what lets the SSE, stop and delete endpoints tell the
+    # caller's session from a stranger's without a database round trip.
+    session_owners = {}
     # Finished runs keep their event log briefly so a reconnecting SSE client can
     # replay the tail it missed. Bounded, otherwise long-lived processes would
     # retain every event log forever.
@@ -225,7 +236,8 @@ def create_app(settings=None, store=None, gateway=None):
         finished_runs[session_id] = bus
         finished_runs.move_to_end(session_id)
         while len(finished_runs) > FINISHED_RUN_LIMIT:
-            finished_runs.popitem(last=False)
+            stale, _ = finished_runs.popitem(last=False)
+            session_owners.pop(stale, None)
 
     def lookup_run(session_id):
         """Resolve a session to (bus, terminal) from active runs then finished ones."""
@@ -247,12 +259,32 @@ def create_app(settings=None, store=None, gateway=None):
         try:
             await store.setup()
             await pool.start()
+            await auth.setup()
+            await auth.prune()
+            # The built-in agent is shared: its empty owner means every account
+            # may read and run it, and nobody may replace it.
             if await store.get("agents", "default") is None:
-                await store.put("agents", default.model_dump())
-            await load_mcp_config(settings.mcp_config)
+                await store.put("agents", default.model_dump(), owner="")
+            owner = await auth.bootstrap(settings.admin_user,
+                                         settings.admin_password.get_secret_value())
+            if owner is None:
+                logger.warning("No account exists yet. Set ADMIN_USER and ADMIN_PASSWORD, then "
+                               "restart: every /api request is refused until then.")
+            else:
+                # Resources written before accounts existed belong to the account
+                # the operator designated, not to whoever logs in first.
+                await auth.adopt_ownerless(owner["id"])
+            # The startup MCP file is planted by the operator, so its rows belong
+            # to the initial account rather than to nobody in particular.
+            planted = current_user.set(owner["id"] if owner else None) if owner else None
+            try:
+                await load_mcp_config(settings.mcp_config)
+            finally:
+                if planted is not None:
+                    current_user.reset(planted)
             app.state.ready = True
         except Exception:
-            logger.warning("MongoDB unavailable; data endpoints return 503.")
+            logger.warning("MongoDB unavailable; data endpoints return 503.", exc_info=True)
         yield
         for _, task in runs.values():
             task.cancel()
@@ -260,10 +292,116 @@ def create_app(settings=None, store=None, gateway=None):
         await pool.close()
 
     app = FastAPI(title="AgentForge", lifespan=lifespan)
+    # Set here as well as in the lifespan: a request that arrives before startup
+    # finishes must see "not ready" rather than an AttributeError.
+    app.state.ready = False
     app.state.runtime, app.state.approvals = runtime, approvals
     app.state.sandbox_pool = pool
     # Exposed so operators (and the runtime status endpoint) can inspect what is running.
     app.state.runs, app.state.finished_runs = runs, finished_runs
+    app.state.auth = auth
+
+    # The only routes reachable without a session. Everything else under /api is
+    # refused before it reaches a handler, so a new endpoint is protected by
+    # default instead of by remembering to add a check.
+    PUBLIC_API = {"/api/auth/login", "/api/auth/logout", "/api/auth/me"}
+
+    def owner_id() -> str:
+        """The calling account, from the cookie alone.
+
+        Raises rather than returning a default: an empty identity here would
+        silently turn an ownership filter into "everything", which is the exact
+        failure this design is meant to prevent.
+        """
+        identity = current_user.get()
+        if not identity:
+            raise HTTPException(401, "Not authenticated.")
+        return identity
+
+    async def owned_session(identity: str) -> dict:
+        """A session the caller owns, or the same 404 an unknown id gets.
+
+        Answering 403 here would confirm that somebody else's session exists,
+        which is exactly what a probing caller wants to learn.
+        """
+        session = await store.get("sessions", identity, owner=owner_id())
+        if session is None:
+            raise HTTPException(404, "Session not found.")
+        return session
+
+    def same_origin(request: Request) -> bool:
+        origin = (request.headers.get("origin") or "").rstrip("/")
+        if not origin:
+            # Browsers always send Origin on unsafe methods; curl and the test
+            # client do not, and neither carries an ambient cookie from another site.
+            return True
+        allowed = {item.strip().rstrip("/")
+                   for item in settings.allowed_origins.split(",") if item.strip()}
+        if origin in allowed:
+            return True
+        # Behind a reverse proxy the Host header is the upstream, and the browser's
+        # own hostname arrives as X-Forwarded-Host. Both are legitimate answers to
+        # "which site is this request for".
+        hosts = {request.headers.get("host", ""),
+                 (request.headers.get("x-forwarded-host") or "").split(",")[0].strip()}
+        return origin.split("://", 1)[-1] in {host for host in hosts if host}
+
+    @app.middleware("http")
+    async def authenticate(request, call_next):
+        path = request.url.path
+        # Static assets are served by nginx or Vite; only the API is ours to guard.
+        if not path.startswith("/api"):
+            return await call_next(request)
+        token = request.cookies.get(SESSION_COOKIE, "")
+        try:
+            user = await auth.user_for_token(token) if token else None
+        except Exception:
+            logger.warning("Session lookup failed; treating the request as anonymous.",
+                           exc_info=True)
+            user = None
+        claim = current_user.set(user["id"]) if user else None
+        try:
+            if user is None and path not in PUBLIC_API:
+                return JSONResponse({"detail": "Not authenticated."}, status_code=401)
+            if user is not None and request.method not in {"GET", "HEAD", "OPTIONS"} \
+                    and not same_origin(request):
+                return JSONResponse({"detail": "Cross-origin request rejected."},
+                                    status_code=403)
+            if user is not None:
+                request.state.user = user
+            return await call_next(request)
+        finally:
+            if claim is not None:
+                current_user.reset(claim)
+
+    @app.post("/api/auth/login")
+    async def login(payload: LoginRequest, response: Response):
+        if not app.state.ready:
+            raise HTTPException(503, "MongoDB unavailable. Start docker compose up -d mongo and "
+                                     "restart Harness.")
+        try:
+            user = await auth.authenticate(payload.username, payload.password)
+        except AuthError as exc:
+            logger.info("login failed user=%s", payload.username[:32])
+            raise HTTPException(401, str(exc)) from None
+        token = await auth.start_session(user["id"])
+        response.set_cookie(SESSION_COOKIE, token, max_age=int(settings.session_hours * 3600),
+                            httponly=True, samesite="lax", secure=settings.cookie_secure, path="/")
+        logger.info("login user=%s", user["username"])
+        return {"code": 200, "data": {"id": user["id"], "username": user["username"]}}
+
+    @app.post("/api/auth/logout")
+    async def logout(request: Request, response: Response):
+        await auth.end_session(request.cookies.get(SESSION_COOKIE, ""))
+        response.delete_cookie(SESSION_COOKIE, path="/")
+        return {"code": 200, "data": {"loggedOut": True}}
+
+    @app.get("/api/auth/me")
+    async def whoami(request: Request):
+        user = getattr(request.state, "user", None)
+        if user is None:
+            return {"code": 200, "data": None}
+        return {"code": 200, "data": {"id": user["id"], "username": user["username"]}}
 
     @app.middleware("http")
     async def log_request(request, call_next):
@@ -326,15 +464,19 @@ def create_app(settings=None, store=None, gateway=None):
     @app.get("/api/agents")
     async def agents():
         ready()
+        listed = await store.list("agents", owner=owner_id())
         return {"code": 200, "data": [{**a, "modelId": a["model"]["model_id"],
-            "systemPrompt": a["system_prompt"]} for a in await store.list("agents")]}
+            "systemPrompt": a["system_prompt"]} for a in listed]}
 
     @app.get("/api/files/{file_id}/download")
     async def download_artifact(file_id: str):
         ready()
-        record = await store.get("artifacts", file_id)
+        record = await store.get("artifacts", file_id, owner=owner_id())
         if record is None:
             raise HTTPException(404, "File not found.")
+        # The artifact row was written by a run, so its session decides who may
+        # download it: a stale row must not outlive the conversation's ownership.
+        await owned_session(record.get("sessionId") or "")
         artifact = record["artifact"]
         mime = artifact.get("mimeType") or "application/octet-stream"
         headers = {
@@ -352,12 +494,15 @@ def create_app(settings=None, store=None, gateway=None):
     @app.get("/api/skills")
     async def list_skills():
         ready()
+        uid = owner_id()
+        packages = await store.list("skills", owner=uid)
         return {"code": 200, "data": [{k: v for k, v in p.items() if k != "files"}
-            | {"files": list(p["files"])} for p in await store.list("skills")]}
+            | {"files": list(p["files"])} for p in packages]}
 
     @app.post("/api/skills", status_code=201)
     async def install_skill(package: SkillPackage):
         ready()
+        owner_id()
         installed = await skill_manager.install(package)
         return {"code": 201, "data": {k: v for k, v in installed.items() if k != "files"}
             | {"files": list(installed["files"])}}
@@ -365,22 +510,32 @@ def create_app(settings=None, store=None, gateway=None):
     @app.delete("/api/skills/{identity}")
     async def uninstall_skill(identity: str):
         ready()
+        uid = owner_id()
         try:
             package = await skill_manager.delete(identity)
         except ValueError as exc:
             raise HTTPException(404 if "not installed" in str(exc) else 409, str(exc)) from None
         removed = 0
-        for directory in settings.agentforge_workspace.glob("**/.skills"):
+        # Only this account's workspaces. A sandbox workspace is named after the
+        # container, not the session, so the session row is what decides
+        # ownership; a skill id synced into someone else's conversation stays.
+        roots = []
+        for session in await store.list("sessions", owner=uid):
+            lease = pool.workspaces.get(session["id"])
+            roots.append(lease.root if lease is not None
+                         else settings.agentforge_workspace / session["id"])
+        for root in roots:
             try:
-                removed += remove_synced_skill(directory.parent, identity)
+                removed += remove_synced_skill(root, identity)
             except (OSError, ValueError):
-                logger.warning("Could not clean synced skill %s in %s", identity, directory)
+                logger.warning("Could not clean synced skill %s in %s", identity, root)
         return {"code": 200, "data": {"id": identity, "name": package["name"],
             "removed_workspaces": removed}}
 
     @app.get("/api/mcp/servers")
     async def list_mcp_servers():
         ready()
+        owner_id()
         servers = await store.list("mcp_servers")
         return {"code": 200, "data": [public_server(server) for server in servers]}
 
@@ -441,6 +596,7 @@ def create_app(settings=None, store=None, gateway=None):
     @app.post("/api/mcp/servers", status_code=201)
     async def register_mcp_server(request: MCPServerRequest):
         ready()
+        owner_id()
         if await store.get("mcp_servers", request.id):
             raise HTTPException(409, "MCP server ID already exists.")
         return {"code": 201, "data": await save_server(request)}
@@ -449,6 +605,7 @@ def create_app(settings=None, store=None, gateway=None):
     async def import_mcp_server(payload: MCPConfig):
         """Accept the `mcpServers` block a catalogue gives you, verbatim."""
         ready()
+        owner_id()
         try:
             request = parse_config(payload.config)
         except ValueError as exc:
@@ -469,9 +626,12 @@ def create_app(settings=None, store=None, gateway=None):
     @app.delete("/api/mcp/servers/{identity}")
     async def remove_mcp_server(identity: str):
         ready()
+        owner_id()
+        if await store.get("mcp_servers", identity) is None:
+            raise HTTPException(404, "MCP server is not registered.")
         if await store.list("agents", {"mcp_servers": identity}):
             raise HTTPException(409, "MCP server is referenced by a saved agent.")
-        await store.db.mcp_servers.delete_one({"id": identity})
+        await store.db.mcp_servers.delete_one({"id": identity, **store.scope()})
         logger.info("mcp server removed id=%s", identity)
         return {"code": 200}
 
@@ -483,6 +643,7 @@ def create_app(settings=None, store=None, gateway=None):
         broken would have to be registered again from scratch, token included.
         """
         ready()
+        owner_id()
         server = await store.get("mcp_servers", identity)
         if server is None:
             raise HTTPException(404, "MCP server is not registered.")
@@ -580,6 +741,9 @@ def create_app(settings=None, store=None, gateway=None):
     @app.post("/api/agents", status_code=201)
     async def create_agent(agent: AgentDefinition):
         ready()
+        uid = owner_id()
+        if agent.id == "default":
+            raise HTTPException(409, "The built-in agent id is reserved.")
         prepared, remote = await prepare_agent(agent)
         if agent.model.provider not in gateway.adapters:
             raise HTTPException(422, "Model provider is not registered.")
@@ -590,9 +754,9 @@ def create_app(settings=None, store=None, gateway=None):
             validation.schemas(prepared.tools)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
-        if await store.get("agents", agent.id):
+        if await store.get("agents", agent.id, owner=uid):
             raise HTTPException(409, "Agent ID already exists.")
-        return {"code": 201, "data": await store.put("agents", agent.model_dump())}
+        return {"code": 201, "data": await store.put("agents", agent.model_dump(), owner=uid)}
 
     async def execute(agent, task, session_id, bus, turn_id, remote, resume=False):
         current_session.set(session_id)
@@ -663,6 +827,7 @@ def create_app(settings=None, store=None, gateway=None):
     def start(agent, task, session_id, turn_id, remote=(), resume=False):
         if session_id in runs and not runs[session_id][1].done():
             raise HTTPException(409, "Session already has an active run.")
+        session_owners[session_id] = owner_id()
         def workspace():
             sandbox = run_sandboxes.get(session_id)
             return sandbox.workspace if sandbox else Workspace(settings.agentforge_workspace / session_id)
@@ -675,11 +840,18 @@ def create_app(settings=None, store=None, gateway=None):
     @app.post("/api/agents/run")
     async def run(request: LegacyRequest):
         ready(model=True)
+        uid = owner_id()
         if not request.input.strip() or request.sessionId == "default":
             raise HTTPException(422, "Use nonempty input and a unique session ID.")
         if request.fileIds:
             raise HTTPException(422, "File uploads require Tier 2.")
-        definition = await store.get("agents", request.agentIds[0] if request.agentIds else "default")
+        # The browser supplies sessionId, so an id that already exists has to be
+        # proven to be ours before the run may continue it.
+        row = await store.db.sessions.find_one({"id": request.sessionId}, {"_id": 0})
+        if row is not None and row.get("owner_id") != uid:
+            raise HTTPException(404, "Session not found.")
+        definition = await store.get(
+            "agents", request.agentIds[0] if request.agentIds else "default", owner=uid)
         if not definition:
             raise HTTPException(404, "Agent not found.")
         agent = AgentDefinition.model_validate(definition)
@@ -713,7 +885,8 @@ def create_app(settings=None, store=None, gateway=None):
     @app.post("/api/sessions", status_code=201)
     async def create_session(request: SessionRequest):
         ready(model=True)
-        definition = await store.get("agents", request.agent_id)
+        uid = owner_id()
+        definition = await store.get("agents", request.agent_id, owner=uid)
         if not definition:
             raise HTTPException(404, "Agent not found.")
         session_id, turn_id = new_id(), new_id()
@@ -732,8 +905,15 @@ def create_app(settings=None, store=None, gateway=None):
 
     @app.get("/api/sessions/{session_id}/events")
     async def session_events(session_id: str, after: int = Query(0, ge=0)):
+        uid = owner_id()
+        recorded = session_owners.get(session_id)
+        if recorded is not None and recorded != uid:
+            raise HTTPException(404, "Session events are unavailable in this process.")
         found = lookup_run(session_id)
         if found is None:
+            # A restart forgets the in-memory bus; the stored row still decides
+            # who may ask for the replay.
+            await owned_session(session_id)
             raise HTTPException(404, "Session events are unavailable in this process.")
         bus, terminal = found
         if after >= len(bus.events) and terminal:
@@ -754,7 +934,7 @@ def create_app(settings=None, store=None, gateway=None):
         # The gauge reads this after a reload: the run's context events are gone, but
         # the last measurement was committed with the transcript it describes.
         ready()
-        session = await store.get("sessions", session_id)
+        session = await store.get("sessions", session_id, owner=owner_id())
         if session is None:
             raise HTTPException(404, "Session not found.")
         return {"code": 200, "data": session.get("context")}
@@ -762,7 +942,7 @@ def create_app(settings=None, store=None, gateway=None):
     @app.get("/api/sessions")
     async def list_sessions():
         ready()
-        sessions = await store.list("sessions")
+        sessions = await store.list("sessions", owner=owner_id())
         view = []
         for session in sessions:
             session_id = session.get("id") or session.get("sessionId")
@@ -777,6 +957,10 @@ def create_app(settings=None, store=None, gateway=None):
 
     @app.post("/api/sessions/{session_id}/stop")
     async def stop_session(session_id: str):
+        uid = owner_id()
+        recorded = session_owners.get(session_id)
+        if recorded is not None and recorded != uid:
+            raise HTTPException(404, "No active run for this session.")
         entry = runs.get(session_id)
         if entry is None:
             raise HTTPException(404, "No active run for this session.")
@@ -793,6 +977,7 @@ def create_app(settings=None, store=None, gateway=None):
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str):
         ready()
+        await owned_session(session_id)
         approvals.forget_session(session_id)
         entry = runs.get(session_id)
         if entry is not None:
@@ -810,7 +995,7 @@ def create_app(settings=None, store=None, gateway=None):
         await store.db.traces.delete_many({"sessionId": session_id})
         await store.db.checkpoints.delete_many({"sessionId": session_id})
         await store.db.artifacts.delete_many({"sessionId": session_id})
-        result = await store.db.sessions.delete_one({"id": session_id})
+        result = await store.db.sessions.delete_one({"id": session_id, **store.scope()})
         if result.deleted_count == 0:
             raise HTTPException(404, "Session not found.")
         finished_runs.pop(session_id, None)
@@ -819,7 +1004,18 @@ def create_app(settings=None, store=None, gateway=None):
     @app.get("/api/approvals")
     async def list_approvals():
         # Decisions resolve in-memory, so this stays available even when Mongo is down.
-        return {"code": 200, "data": approvals.pending_list()}
+        uid = owner_id()
+        visible = []
+        for item in approvals.pending_list():
+            session_id = item.get("sessionId") or ""
+            if not session_id:
+                continue
+            owner = session_owners.get(session_id)
+            if owner is None:
+                owner = uid if await store.get("sessions", session_id, owner=uid) else None
+            if owner == uid:
+                visible.append(item)
+        return {"code": 200, "data": visible}
 
     @app.get("/api/interventions/policy")
     async def intervention_policy():
@@ -857,6 +1053,17 @@ def create_app(settings=None, store=None, gateway=None):
 
     @app.post("/api/approvals/{call_id}")
     async def approve(call_id: str, request: ApprovalRequest):
+        uid = owner_id()
+        session_id = approvals.owners.get(call_id)
+        if session_id is None:
+            # Resolved already, or never existed. Both answer the same way so a
+            # caller cannot use this endpoint to probe for approval ids.
+            raise HTTPException(409, "Approval is no longer pending.")
+        recorded = session_owners.get(session_id)
+        if recorded is not None and recorded != uid:
+            raise HTTPException(404, "Approval not found.")
+        if recorded is None and await store.get("sessions", session_id, owner=uid) is None:
+            raise HTTPException(404, "Approval not found.")
         try:
             approvals.resolve(call_id, request.approved, request.reason, request.remember)
         except ValueError as exc:
@@ -866,6 +1073,7 @@ def create_app(settings=None, store=None, gateway=None):
     @app.get("/api/traces/{session_id}")
     async def traces(session_id: str):
         ready()
+        await owned_session(session_id)
         results = await store.list("traces", {"sessionId": session_id})
         for trace in results:
             trace["turns"] = sorted(await store.list("turns", {"trace_id": trace["id"]}), key=lambda t: t["index"])

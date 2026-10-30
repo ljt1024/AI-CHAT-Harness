@@ -9,6 +9,7 @@ from agentforge.gateway.base import ContentDelta, Done, ToolCallRequest
 from agentforge.gateway.registry import ModelGateway
 from agentforge.models import ToolCall
 from agentforge.store import MongoDBStore
+from helpers import AuthedClient, TEST_PASSWORD
 
 
 async def test_multiple_docker_commands_finish_without_human_intervention(tmp_path, docker_client):
@@ -29,9 +30,9 @@ async def test_multiple_docker_commands_finish_without_human_intervention(tmp_pa
     gateway = ModelGateway()
     gateway.register("deepseek", GenerateAndCheck())
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0), store, gateway)
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0), store, gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             response = await client.post("/api/agents/run", json={"input": "生成并验证HTML",
                 "sessionId": "autonomous-commands", "sandbox": True, "stream": True})
             events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]

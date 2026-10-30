@@ -10,8 +10,12 @@ export default defineConfig({
     port: 5174,
     strictPort: true,
     proxy: {
-      '/api': process.env.AGENTFORGE_API_TARGET || 'http://127.0.0.1:8000',
-      '/ws': { target: process.env.AGENTFORGE_API_TARGET || 'http://127.0.0.1:8000', ws: true },
+      // changeOrigin stays false so the backend sees the browser's own Host.
+      // The session cookie is same-origin, and the API rejects a write whose
+      // Origin names a different host, so rewriting Host here would make every
+      // mutating request look cross-origin in development.
+      '/api': { target: process.env.AGENTFORGE_API_TARGET || 'http://127.0.0.1:8000', changeOrigin: false },
+      '/ws': { target: process.env.AGENTFORGE_API_TARGET || 'http://127.0.0.1:8000', ws: true, changeOrigin: false },
     },
   },
   resolve: {

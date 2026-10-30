@@ -111,8 +111,11 @@ class SkillManager:
             "files": package.files, "provenance": provenance or {"source": "upload"}})
 
     async def catalog(self):
-        packages = await self.store.db.skills.find({}, {"_id": 0, "id": 1, "name": 1,
-            "summary": 1}).sort("name", 1).to_list(length=10000)
+        # Scoped to the caller: two accounts can hold the same content-derived id,
+        # and a list of everybody's skills would leak what other people installed.
+        packages = await self.store.db.skills.find(
+            self.store.scope(), {"_id": 0, "id": 1, "name": 1, "summary": 1}
+        ).sort("name", 1).to_list(length=10000)
         for package in packages:
             if "summary" not in package:
                 original = await self.store.get("skills", package["id"])
@@ -150,7 +153,9 @@ class SkillManager:
             raise ValueError(f"Skill is not installed: {identity}")
         if await self.store.list("agents", {"skills": identity}):
             raise ValueError("Skill is referenced by a saved agent; remove it from that agent first.")
-        await self.store.db.skills.delete_one({"id": identity})
+        # The owner filter is not optional: the same content id can exist as two
+        # rows, and deleting "the" row would remove somebody else's copy.
+        await self.store.db.skills.delete_one({"id": identity, **self.store.scope()})
         return package
 
 

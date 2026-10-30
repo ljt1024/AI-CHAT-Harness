@@ -13,6 +13,7 @@ from agentforge.sandbox.docker_runner import Sandbox, SandboxUnavailable
 from agentforge.sandbox.pool import Lease, SandboxState
 from agentforge.store import MongoDBStore
 from agentforge.tools.fs import Workspace
+from helpers import AuthedClient, TEST_PASSWORD
 
 
 class FakeRunner:
@@ -29,6 +30,15 @@ class FakeRunner:
 
 
 class FakePool:
+    async def start(self):
+        return None
+
+    async def close(self):
+        return None
+
+    def status(self):
+        return {}
+
     def __init__(self, root, runner):
         self.root = root
         self.runner = runner
@@ -47,7 +57,7 @@ class FakePool:
 
 def build(root, runner=None, monkeypatch=None):
     pool = FakePool(root, runner or FakeRunner())
-    settings = Settings(agentforge_workspace=root)
+    settings = Settings(agentforge_workspace=root, admin_password=TEST_PASSWORD)
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
     if monkeypatch is not None:
         monkeypatch.setattr("agentforge.api.SandboxPool", lambda *a, **k: pool)
@@ -57,8 +67,9 @@ def build(root, runner=None, monkeypatch=None):
 
 async def test_command_runs_inside_the_sandbox(tmp_path, monkeypatch):
     application, pool = build(tmp_path, monkeypatch=monkeypatch)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application),
-                                 base_url="http://test") as client:
+    async with application.router.lifespan_context(application), \
+            AuthedClient(transport=httpx.ASGITransport(app=application),
+                         base_url="http://test") as client:
         response = await client.post("/api/sandbox/exec",
                                      json={"command": ["python", "run.py"]})
     assert response.status_code == 200
@@ -70,8 +81,9 @@ async def test_command_runs_inside_the_sandbox(tmp_path, monkeypatch):
 
 async def test_files_are_written_into_the_sandbox_workspace(tmp_path, monkeypatch):
     application, pool = build(tmp_path, monkeypatch=monkeypatch)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application),
-                                 base_url="http://test") as client:
+    async with application.router.lifespan_context(application), \
+            AuthedClient(transport=httpx.ASGITransport(app=application),
+                         base_url="http://test") as client:
         response = await client.post("/api/sandbox/exec", json={
             "command": ["python", "pkg/run.py"],
             "files": [{"path": "pkg/run.py", "content": "print(1)"}]})
@@ -82,8 +94,9 @@ async def test_files_are_written_into_the_sandbox_workspace(tmp_path, monkeypatc
 
 async def test_traversal_and_credential_paths_are_refused(tmp_path, monkeypatch):
     application, pool = build(tmp_path, monkeypatch=monkeypatch)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application),
-                                 base_url="http://test") as client:
+    async with application.router.lifespan_context(application), \
+            AuthedClient(transport=httpx.ASGITransport(app=application),
+                         base_url="http://test") as client:
         escaping = await client.post("/api/sandbox/exec", json={
             "command": ["ls"], "files": [{"path": "../outside.py", "content": "x"}]})
         secret = await client.post("/api/sandbox/exec", json={
@@ -95,8 +108,9 @@ async def test_traversal_and_credential_paths_are_refused(tmp_path, monkeypatch)
 
 async def test_empty_command_is_rejected(tmp_path, monkeypatch):
     application, _ = build(tmp_path, monkeypatch=monkeypatch)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application),
-                                 base_url="http://test") as client:
+    async with application.router.lifespan_context(application), \
+            AuthedClient(transport=httpx.ASGITransport(app=application),
+                         base_url="http://test") as client:
         response = await client.post("/api/sandbox/exec", json={"command": []})
     assert response.status_code == 422
 
@@ -104,8 +118,9 @@ async def test_empty_command_is_rejected(tmp_path, monkeypatch):
 async def test_unavailable_docker_reports_503_and_still_releases(tmp_path, monkeypatch):
     runner = FakeRunner(error=SandboxUnavailable("Docker unavailable."))
     application, pool = build(tmp_path, runner=runner, monkeypatch=monkeypatch)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application),
-                                 base_url="http://test") as client:
+    async with application.router.lifespan_context(application), \
+            AuthedClient(transport=httpx.ASGITransport(app=application),
+                         base_url="http://test") as client:
         response = await client.post("/api/sandbox/exec", json={"command": ["ls"]})
     assert response.status_code == 503
     assert pool.released == pool.acquired

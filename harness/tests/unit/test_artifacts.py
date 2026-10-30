@@ -18,6 +18,7 @@ from agentforge.previews import build_preview
 from agentforge.sandbox.tools import SandboxTool
 from agentforge.store import MongoDBStore
 from agentforge.tools.fs import Workspace
+from helpers import AuthedClient, TEST_PASSWORD
 
 SPREADSHEET = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 PRESENTATION = "http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -305,18 +306,22 @@ async def test_download_sends_the_real_content_type(tmp_path):
     cannot be rendered, and an HTML one that does not get the sandbox cannot be
     opened safely."""
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
-    for identity, mime, body in [("pdf-1", "application/pdf", b"%PDF-1.4"),
-                                 ("html-1", "text/html", b"<h1>hi</h1>"),
-                                 ("png-1", "image/png", b"\x89PNG")]:
-        await store.put("artifacts", {"id": identity, "sessionId": "session",
-            "artifact": {"fileId": identity, "fileName": f"{identity}.bin", "format": "pdf",
-                         "mimeType": mime, "size": len(body)},
-            "content": body, "sha256": identity})
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0),
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0),
                      store, ModelGateway())
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+        async with AuthedClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
+            # Deliveries belong to a session, and a download is authorized through
+            # it, so the fixture creates both as the logged-in account.
+            owner = (await client.get("/api/auth/me")).json()["data"]["id"]
+            await store.put("sessions", {"id": "session"}, owner=owner)
+            for identity, mime, body in [("pdf-1", "application/pdf", b"%PDF-1.4"),
+                                         ("html-1", "text/html", b"<h1>hi</h1>"),
+                                         ("png-1", "image/png", b"\x89PNG")]:
+                await store.put("artifacts", {"id": identity, "sessionId": "session",
+                    "artifact": {"fileId": identity, "fileName": f"{identity}.bin",
+                                 "format": "pdf", "mimeType": mime, "size": len(body)},
+                    "content": body, "sha256": identity}, owner=owner)
             pdf = await client.get("/api/files/pdf-1/download")
             html = await client.get("/api/files/html-1/download")
             image = await client.get("/api/files/png-1/download")

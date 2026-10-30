@@ -10,6 +10,7 @@ from agentforge.config import Settings
 from agentforge.gateway.deepseek import DeepSeekAdapter
 from agentforge.gateway.registry import ModelGateway
 from agentforge.store import MongoDBStore
+from helpers import AuthedClient, TEST_PASSWORD
 
 
 @pytest.mark.parametrize("approved", [True, False])
@@ -36,9 +37,9 @@ async def test_truncated_response_recovers_before_approved_docker_write(tmp_path
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as model_client:
         gateway = ModelGateway()
         gateway.register("deepseek", DeepSeekAdapter("test-key", model_client))
-        app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0), store, gateway)
+        app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0), store, gateway)
         async with app.router.lifespan_context(app):
-            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 created = await client.post("/api/agents", json={"name": "Explicit write approval",
                     "tools": ["write_file"], "permissions": {"write_file": "confirm"},
                     "sandbox_policy": {}})

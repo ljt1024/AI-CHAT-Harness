@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from agentforge.capabilities import MCPServerRequest, parse_config, public_server
 from agentforge.mcp_client import MCPTool, discover_tools, reason
 from agentforge.redact import describe, mask_url, status_code
+from helpers import AuthedClient, TEST_PASSWORD
 
 # The shape a ModelScope deployment returns: the tenant id lives in the path.
 HOSTED = "https://mcp.api-inference.modelscope.net/bf56fce2e65e40/streamable_http"
@@ -140,9 +141,9 @@ async def test_import_endpoint_stores_the_token_and_never_returns_it(tmp_path, m
 
     monkeypatch.setattr("agentforge.capabilities.discover_tools", fake_discover)
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0), store)
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0), store)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+        async with AuthedClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
             created = await client.post("/api/mcp/servers/import",
                                         json={"config": json.dumps(PASTED)})
@@ -170,9 +171,9 @@ async def test_listing_hides_the_credential_from_the_browser(tmp_path):
 
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
     await store.put("mcp_servers", {"id": "amap", "url": HOSTED, "token": "ms-secret", "tools": []})
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0), store)
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0), store)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+        async with AuthedClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
             response = await client.get("/api/mcp/servers")
     assert response.status_code == 200
@@ -210,9 +211,9 @@ async def test_registered_servers_are_used_without_picking_them_per_run(tmp_path
     assert await run_servers(store, ["paused"]) == (["paused"], {"paused"})
 
     monkeypatch.setattr("agentforge.capabilities.discover_tools", offline)
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0), store)
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0), store)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+        async with AuthedClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
             skipped = await client.post("/api/agents", json={"name": "Auto", "tools": []})
             pinned = await client.post("/api/agents",
@@ -279,11 +280,11 @@ async def test_a_startup_file_registers_what_it_lists_and_refreshes_on_restart(t
         "Sleepy": {"url": "http://127.0.0.1:9/mcp", "enabled": False}}}))
 
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
-    settings = Settings(_env_file=None, agentforge_workspace=tmp_path, sandbox_warm_size=0,
+    settings = Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0,
                         mcp_config=config)
     app = create_app(settings, store)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+        async with AuthedClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
             first = (await client.get("/api/mcp/servers")).json()["data"]
             # The same file after a restart must refresh, not duplicate.
@@ -308,15 +309,18 @@ async def test_a_server_can_be_switched_off_without_forgetting_it(tmp_path):
     from agentforge.store import MongoDBStore
 
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
-    await store.put("mcp_servers", {"id": "broken", "url": PASTED_URL,
-                                    "token": "ms-0123456789abcdef", "tools": []})
-    app = create_app(Settings(_env_file=None, agentforge_workspace=tmp_path,
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
                               sandbox_warm_size=0), store)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+        async with AuthedClient(transport=httpx.ASGITransport(app=app),
                                      base_url="http://test") as client:
+            # A registered server belongs to the account that registered it.
+            owner = (await client.get("/api/auth/me")).json()["data"]["id"]
+            await store.put("mcp_servers", {"id": "broken", "url": PASTED_URL,
+                                            "token": "ms-0123456789abcdef", "tools": []},
+                            owner=owner)
             off = await client.patch("/api/mcp/servers/broken", json={"enabled": False})
-            kept = await store.get("mcp_servers", "broken")
+            kept = await store.get("mcp_servers", "broken", owner=owner)
             missing = await client.patch("/api/mcp/servers/nope", json={"enabled": False})
     assert off.status_code == 200 and off.json()["data"]["enabled"] is False
     assert kept["token"] == "ms-0123456789abcdef" and kept["enabled"] is False

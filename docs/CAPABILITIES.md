@@ -218,7 +218,7 @@ token. Discovery times out after `MCP_DISCOVER_TIMEOUT` (30 s) and calls after
   download. Direct local CSS/JS/images are bundled; CSS imports/asset URLs and JS imports/fetch are not.
   Limit: 2 MB per bundled HTML, 20 entries per run. Preview remains script-free; open the downloaded
   file to run interactions. `GET /api/files/{id}/download` retrieves a saved delivery after restart.
-  This endpoint is single-user only until planned authentication/ownership checks are implemented.
+  A download is authorized through the delivery's session: another account gets 404.
 
 - `GET/POST /api/skills`: list/import `{name, files: {"SKILL.md": "...", ...}}`.
 - `DELETE /api/skills/{id}`: uninstall; 404 when the skill is not installed, 409 when a saved
@@ -231,9 +231,13 @@ token. Discovery times out after `MCP_DISCOVER_TIMEOUT` (30 s) and calls after
   pin (must exist and answer); omitting it means every registered server is used.
 - `POST /api/agents`: saved definitions also accept `skills` and `mcp_servers`.
 
-The deployment is currently single-user and loopback-only. Skill import and MCP registration
-are trusted administration operations. Do not expose these endpoints publicly without
-authentication, authorization, endpoint allowlists and tenant isolation.
+The deployment now requires sign-in for every `/api` request (see the auth section of the
+README). Resources are owner-scoped: a skill, MCP server, session, trace or artifact belongs to
+the account that created it, and another account gets 404 rather than a 403 that would confirm
+existence. Skill import and MCP registration remain trusted administration operations: the
+initial account comes from `ADMIN_USER`/`ADMIN_PASSWORD`, and further accounts are created by
+an operator. Per-user workspace directories, encrypted MCP credentials and the two-browser
+acceptance run are still outstanding (T15.A3/A4).
 
 ## Verification
 
