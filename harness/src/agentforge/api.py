@@ -27,7 +27,7 @@ from agentforge.loop import Runtime
 from agentforge.logging_config import configure, request_id
 from agentforge.redact import describe, mask_url, status_code
 from agentforge.middleware import MiddlewareStack
-from agentforge.models import PYTHON_SANDBOX_IMAGES, AgentDefinition, ModelRef, new_id
+from agentforge.models import DEFAULT_AGENT_ID, PYTHON_SANDBOX_IMAGES, AgentDefinition, ModelRef, new_id
 from agentforge.permissions import ApprovalManager
 from agentforge.policy import InterventionPolicy
 from agentforge.prompts import with_response_language
@@ -263,10 +263,6 @@ def create_app(settings=None, store=None, gateway=None):
             await auth.setup()
             await auth.prune()
             await auth.prune_guests(settings.guest_retention_hours)
-            # The built-in agent is shared: its empty owner means every account
-            # may read and run it, and nobody may replace it.
-            if await store.get("agents", "default") is None:
-                await store.put("agents", default.model_dump(), owner="")
             owner = await auth.bootstrap(settings.admin_user,
                                          settings.admin_password.get_secret_value())
             if owner is None:
@@ -274,8 +270,21 @@ def create_app(settings=None, store=None, gateway=None):
                                "restart: every /api request is refused until then.")
             else:
                 # Resources written before accounts existed belong to the account
-                # the operator designated, not to whoever logs in first.
+                # the operator designated, not to whoever logs in first. The
+                # built-in agent is excluded there on purpose.
                 await auth.adopt_ownerless(owner["id"])
+            # The built-in agent is shared: its empty owner means every account,
+            # visitor included, may read and run it, and nobody may replace it.
+            # So exactly one row carries that id. An earlier migration bound it
+            # to an account, which reads fine for that account and empties the
+            # catalogue for everyone else, and no API path can create another
+            # row with this id -- anything private under it is that leftover.
+            orphaned = await store.db.agents.delete_many(
+                {"id": DEFAULT_AGENT_ID, "owner_id": {"$ne": ""}})
+            if orphaned.deleted_count:
+                logger.warning("Dropped %d private copy of the built-in agent; it is "
+                               "shared read-only.", orphaned.deleted_count)
+            await store.put("agents", default.model_dump(), owner="")
             # The startup MCP file is planted by the operator, so its rows belong
             # to the initial account rather than to nobody in particular.
             planted = current_user.set(owner["id"] if owner else None) if owner else None

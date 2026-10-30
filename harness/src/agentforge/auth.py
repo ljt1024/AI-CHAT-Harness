@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
-from agentforge.models import new_id
+from agentforge.models import DEFAULT_AGENT_ID, new_id
 
 logger = logging.getLogger(__name__)
 
@@ -340,13 +340,27 @@ class AuthService:
 
         Idempotent: only documents missing `owner_id` are touched, and the count
         is logged so an operator can see what the migration moved.
+
+        The built-in agent is left alone. It has no owner on purpose — every
+        account and every visitor may run it — and adopting it here would turn
+        it into one account's private resource without that account noticing
+        anything wrong.
         """
         counts = {}
         for collection in ("agents", "sessions", "traces", "turns", "tool_calls",
                            "checkpoints", "artifacts", "skills", "mcp_servers"):
+            query: dict = {"owner_id": {"$exists": False}}
+            if collection == "agents":
+                query["id"] = {"$ne": DEFAULT_AGENT_ID}
             result = await self.store.db[collection].update_many(
-                {"owner_id": {"$exists": False}}, {"$set": {"owner_id": user_id}})
+                query, {"$set": {"owner_id": user_id}})
             counts[collection] = result.modified_count
+        # The shared agent is marked shared rather than left ownerless: a row
+        # with no field at all matches nothing an account may read, and the
+        # startup write then inserts a second row beside it.
+        await self.store.db.agents.update_many(
+            {"id": DEFAULT_AGENT_ID, "owner_id": {"$exists": False}},
+            {"$set": {"owner_id": ""}})
         if any(counts.values()):
             logger.info("Bound legacy resources to %s: %s", user_id, counts)
         return counts

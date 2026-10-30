@@ -22,6 +22,13 @@ class StopConditions(BaseModel):
 
 DEFAULT_SANDBOX_IMAGE = "python:3.12-slim"
 
+# The agent every session starts from when none is named. Its row is shared
+# read-only: it carries an empty owner, which means every account — including a
+# visitor — can read and run it, and nobody can replace it. Never bind it to an
+# account: doing so is invisible in the admin's own session and only shows up
+# as "Agent not found." for everyone else.
+DEFAULT_AGENT_ID = "default"
+
 # Images that can run the integrated file tools: anything with a CPython
 # interpreter. `node:22-slim` has no python, so sessions pinned to it may not
 # use write_file/read_file and friends.

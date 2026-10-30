@@ -40,6 +40,20 @@ Not in this ADR: per-user workspace directories and sandbox leases (T15.A3), enc
 credentials (T15.A3), and the two-browser acceptance run (T15.A4). Session ids are UUIDs and every
 entry point checks ownership, but workspaces still sit at `workspaces/<session_id>` until A3.
 
+## Amendment: adopting legacy rows must skip the shared agent
+
+Binding "resources with no `owner_id`" initially included the built-in agent. That is wrong, and it
+is invisible to whoever gains it: the row simply becomes private to the first account, while every
+other account — and every visitor trial — reads an empty catalogue and fails with
+`Agent not found.` The delete-if-owned repair below is what shipped.
+
+- `adopt_ownerless()` sets `owner_id` to the initial account except for `agents` rows carrying the
+  reserved id; those it marks `owner_id: ""` (shared) rather than leaving them with no field, which
+  matches nothing any account may read.
+- Startup removes any private row under that reserved id before writing the shared one. No API path
+  can create another row with this id (`POST /api/agents` refuses it), so such a row can only be
+  this bug's leftover — and keeping it would show two agents with the same id to one account.
+
 ## Verification
 
 `tests/unit/test_auth.py` covers hashing round-trips, wrong passwords, tampered encodings, expiry,
