@@ -45,6 +45,11 @@ MCP_SERVER_URL=http://localhost:9000/mcp
 # 登录账号：启动时创建第一个账号；不设密码则无人能登录（所有 /api 返回 401）
 ADMIN_USER=admin
 ADMIN_PASSWORD=一个至少 10 位的密码
+# 访客试聊：不登录可先浏览并真实对话 N 轮（0=关闭，回到全站必须登录）；
+# 全站每日匿名轮数上限 + 匿名会话保留时长（小时，到期清理）
+GUEST_TURNS=4
+GUEST_DAILY_TURNS=200
+GUEST_RETENTION_HOURS=72
 # 可选：HTTPS 部署时设 true；额外放行的跨域写请求来源（逗号分隔）
 COOKIE_SECURE=false
 ALLOWED_ORIGINS=
@@ -95,9 +100,11 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 
 每个 `/api` 请求（`/api/auth/*`、`/health` 除外）都要先登录。启动时若设置了 `ADMIN_USER` 与 `ADMIN_PASSWORD`，服务会创建第一个账号——从不"谁先来谁注册"。登录成功后浏览器只拿到一枚 HttpOnly、SameSite=Lax 的 Cookie；会话本体在 MongoDB 里，登出、过期和撤号都会让它失效。密码用 `hashlib.scrypt` 加盐哈希，登录失败有按账号的限流锁定。
 
+**访客试聊**（ADR-0015）：不登录也能进界面，并真实对话 `GUEST_TURNS` 轮（默认 4）。访客身份来自独立的 `agentforge_guest` Cookie，归属过滤原样生效——访客之间互相看不见。全站每日匿名轮数由 `GUEST_DAILY_TURNS` 封顶（清 Cookie 换不来新额度）；超过后返回 403，前端弹出登录框，**试聊的会话在登录后原样转到账号名下**。装技能、接 MCP、建智能体、执行沙箱命令等改动安装的操作不向访客开放，未认领的访客会话在 `GUEST_RETENTION_HOURS` 小时后清理。`GUEST_TURNS=0` 恢复"全站必须登录"。
+
 授权模型：资源（智能体、会话、轨迹、产物、技能、MCP 服务）都带 `owner_id`，读取、续跑、审批、订阅 SSE、下载文件全部按调用者过滤，别人的资源返回 404——既不能访问，也无法确认它存在。内置的 `default` 智能体是共享只读的，任何人可以运行但不能占据这个 id。写请求额外校验 Origin（反代场景认 `X-Forwarded-Host`，或用 `ALLOWED_ORIGINS` 显式放行）。
 
-前端自动跳登录页，401 会把整页带回登录表单；侧边栏底部有账号与退出。
+登录墙出现在第一次需要账号的时刻：未登录可直接浏览与试聊，额度用尽或执行受保护操作时弹出登录层（草稿不丢），会话过期也退回弹层而不是整页丢弃；侧边栏底部显示访客剩余轮数或账号与退出。
 
 ### 智能体循环：思考 → 行动 → 观察
 
@@ -240,17 +247,18 @@ uv run ruff check src tests     # 后端 lint
 uv run pytest tests -q          # 后端全量测试（含真实 Docker / MongoDB 用例）
 ```
 
-登录链路可以在真实浏览器里验证（需要后端已用 `ADMIN_PASSWORD` 启动、前端 dev 服务在跑）：
+登录与访客试聊链路可以在真实浏览器里验证（需要后端已用 `ADMIN_PASSWORD` 启动、前端 dev 服务在跑）：
 
 ```bash
-/usr/bin/python3 scripts/verify_auth_flow.py --password <管理密码>
+/usr/bin/python3 scripts/verify_auth_flow.py --password <管理密码>   # 登录/退出/会话持久
+/usr/bin/python3 scripts/verify_guest_flow.py  --password <管理密码> # 访客试聊/额度用尽/登录接管
 ```
 
 Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验证脚本位于 `scripts/`，部分会调用真实模型并产生费用。
 
 ## 边界与限制
 
-- 所有 `/api` 请求都需要登录（`/api/auth/*` 与 `/health` 除外）。首个账号由 `ADMIN_USER` / `ADMIN_PASSWORD` 在启动时创建，会话是可撤销的服务端记录，浏览器只持有 HttpOnly Cookie。身份只能来自这个 Cookie——请求体、工具参数或模型输出都无法指定用户。跨用户的资源统一返回 404，工作区按会话命名的拆分（T15.A3）仍未做。
+- 除访客试聊白名单（目录读取、发起对话、应答审批，ADR-0015）外，所有 `/api` 请求都需要登录（`/api/auth/*` 与 `/health` 除外）。首个账号由 `ADMIN_USER` / `ADMIN_PASSWORD` 在启动时创建，会话是可撤销的服务端记录，浏览器只持有 HttpOnly Cookie。身份只能来自 Cookie——请求体、工具参数或模型输出都无法指定用户。访客身份同样带 `owner_id`，互相隔离；试聊有每访客与全站每日双重额度。跨用户的资源统一返回 404，工作区按会话命名的拆分（T15.A3）仍未做。
 - 受限工具不等于 Docker 安全边界，真正隔离由沙箱提供。
 - 尚未提供通用联网搜索；命令执行只在**离线** Docker 沙箱内进行，不能访问外网。远程 MCP 是唯一出网路径：它不进沙箱，在宿主网络里、带着服务令牌调用，所以其风险由「远端注解 + 审批」承担，而不是由沙箱承担。
 - 产物预览为净化环境，交互脚本只在下载后的文件中运行。
@@ -259,7 +267,7 @@ Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验�
 
 - [实现与验收记录](docs/IMPLEMENTATION.md) · [待办与决策](NOTES.md)
 - [技能与 MCP 能力说明](docs/CAPABILITIES.md)
-- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md)
+- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md)
 
 ## 常见问题
 

@@ -19,6 +19,27 @@ export function watchAuth(response: Response): Response {
   return response;
 }
 
+/**
+ * Fired when the server refuses an anonymous turn. Separate from 401 because the
+ * visitor is not signed out -- there was never a session to lose -- and the
+ * dialog it opens says "trial used up" rather than "session expired".
+ */
+export const GUEST_LIMIT_EVENT = 'agentforge:guest-limit';
+
+export function notifyGuestLimit() {
+  window.dispatchEvent(new Event(GUEST_LIMIT_EVENT));
+}
+
+/**
+ * The API answers a refused anonymous turn with `detail: {code, reason}`, which
+ * the plain error reader would flatten into a useless string. Recognise it here
+ * so the provider can open the right dialog, and let the caller keep its message.
+ */
+export function isGuestLimit(detail: unknown): boolean {
+  return Boolean(detail && typeof detail === 'object'
+    && (detail as { code?: string }).code === 'guest_limit');
+}
+
 export async function consumeSSE<T>(
   response: Response,
   onEvent: (event: T) => void,

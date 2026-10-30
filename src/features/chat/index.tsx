@@ -67,7 +67,7 @@ const ChatAI: React.FC = () => {
   const streamLastPaintRef = useRef(0)
   const streamPendingMessageRef = useRef<Message | null>(null)
   const { t } = useLanguage()
-  const { user, signOut } = useAuth()
+  const { user, status, guest, signOut, askToSignIn, spendTurn } = useAuth()
   const { messages } = useChat()
   const activeSessionId = getSelectId();
   // The runtime measures the live transcript; keep it per session so switching
@@ -610,6 +610,14 @@ const ChatAI: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!inputText.trim() || isLoading || isUploadingFile) return;
+    // The wall sits here, not at the front door: by now the visitor has seen the
+    // product, so an account is the thing that buys them the next turn. Nothing
+    // is cleared on the way out -- the draft survives the dialog.
+    if (status !== 'ready' && (!guest.allowed || guest.turnsLeft <= 0)) {
+      askToSignIn(guest.allowed ? 'turn_limit' : 'required');
+      return;
+    }
+    if (status !== 'ready') spendTurn();
     // TODO 增加message id取代key
     const newMessage: Message = {
       content: inputText,
@@ -715,7 +723,10 @@ const ChatAI: React.FC = () => {
       <div className={`chat-container${previewArtifact ? ' chat-container--preview' : ''}`}>
         <Sidebar
           isLoading={isLoading}
-          account={user ? { name: user.username, onSignOut: () => { void signOut() } } : undefined}
+          account={user
+            ? { name: user.username, onSignOut: () => { void signOut() } }
+            : { turnsLeft: guest.allowed ? guest.turnsLeft : undefined,
+                onSignIn: () => askToSignIn('sign_in') }}
         />
         <div className="chat-workspace">
           {isBackendUnavailable && <div className="backend-banner" role="status">{t('chat.serverBusy')}</div>}

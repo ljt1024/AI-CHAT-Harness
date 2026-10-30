@@ -232,8 +232,12 @@ token. Discovery times out after `MCP_DISCOVER_TIMEOUT` (30 s) and calls after
 - `POST /api/agents`: saved definitions also accept `skills` and `mcp_servers`.
 
 The deployment now requires sign-in for every `/api` request (see the auth section of the
-README). Resources are owner-scoped: a skill, MCP server, session, trace or artifact belongs to
-the account that created it, and another account gets 404 rather than a 403 that would confirm
+README), with one explicit exception: an anonymous visitor may browse the catalogue and run a
+few real turns (`GUEST_TURNS`, site-wide capped per day) under its own guest identity, and
+signing in adopts that transcript. Everything that mutates the installation still needs an
+account. Resources are owner-scoped: a skill, MCP server, session, trace or artifact belongs to
+the account (or guest) that created it, and anyone else gets 404 rather than a 403 that would
+confirm
 existence. Skill import and MCP registration remain trusted administration operations: the
 initial account comes from `ADMIN_USER`/`ADMIN_PASSWORD`, and further accounts are created by
 an operator. Per-user workspace directories, encrypted MCP credentials and the two-browser

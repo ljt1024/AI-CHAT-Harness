@@ -73,30 +73,36 @@ async def login(client, username):
     return response.json()["data"]
 
 
-PROTECTED = [
+# Routes a visitor may reach without an account. Everything else answers 401.
+TRIAL = [
     ("GET", "/api/agents"),
+    ("GET", "/api/models"),
+    ("GET", "/api/interventions/policy"),
+    ("GET", "/api/approvals"),
+]
+
+# Changing the installation is not part of a trial: these stay behind the wall.
+ACCOUNT_ONLY = [
     ("POST", "/api/agents"),
     ("GET", "/api/sessions"),
-    ("POST", "/api/sessions"),
     ("GET", "/api/skills"),
     ("POST", "/api/skills"),
     ("GET", "/api/mcp/servers"),
-    ("GET", "/api/approvals"),
     ("GET", "/api/traces/anything"),
-    ("GET", "/api/files/anything/download"),
-    ("GET", "/api/models"),
-    ("POST", "/api/chat/completions"),
     ("POST", "/api/sandbox/exec"),
-    ("GET", "/api/interventions/policy"),
+    ("DELETE", "/api/sessions/anything"),
 ]
 
 
-async def test_anonymous_requests_are_refused_everywhere(service):
+async def test_anonymous_requests_reach_only_the_trial_routes(service):
     app, _, _ = service
     async with anonymous(app) as client:
-        for method, path in PROTECTED:
+        for method, path in ACCOUNT_ONLY:
             response = await client.request(method, path, json={})
             assert response.status_code == 401, f"{method} {path} -> {response.status_code}"
+        for method, path in TRIAL:
+            response = await client.request(method, path, json={})
+            assert response.status_code == 200, f"{method} {path} -> {response.status_code}"
         assert (await client.get("/api/auth/me")).json()["data"] is None
 
 
@@ -110,7 +116,11 @@ async def test_login_logout_and_cookie_flags(service):
         assert "secure" not in cookie.lower(), "plain-HTTP development must still work"
         assert (await client.get("/api/auth/me")).json()["data"]["username"] == "admin"
         assert (await client.post("/api/auth/logout")).status_code == 200
-        assert (await client.get("/api/agents")).status_code == 401
+        # Signing out returns the caller to the trial, not to a dead page.
+        assert (await client.get("/api/skills")).status_code == 401
+        me = (await client.get("/api/auth/me")).json()
+        assert me["data"] is None
+        assert me["guest"]["turnsLeft"] == 4
 
 
 async def test_a_wrong_password_is_rejected_without_a_cookie(service):
@@ -242,4 +252,7 @@ async def test_disabling_an_account_ends_its_sessions(service):
         user = (await client.get("/api/auth/me")).json()["data"]
         assert (await client.get("/api/agents")).status_code == 200
         await app.state.auth.revoke_user(user["id"])
-        assert (await client.get("/api/agents")).status_code == 401
+        # The revoked session drops the caller to the anonymous trial; what it
+        # must never do is keep answering as the account.
+        assert (await client.get("/api/skills")).status_code == 401
+        assert (await client.get("/api/auth/me")).json()["data"] is None

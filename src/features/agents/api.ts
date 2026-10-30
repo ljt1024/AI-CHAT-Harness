@@ -1,10 +1,16 @@
 import { t, languageHeaders } from '@/app/i18n';
 import type { AgentDefinition, AgentEvent, AgentResult } from './types';
 import { getFileDownloadUrl } from '@/shared/utils/fileDownloads';
-import { apiUrl, consumeSSE, postJSON } from '@/infrastructure/api';
+import { apiUrl, consumeSSE, isGuestLimit, notifyGuestLimit, postJSON } from '@/infrastructure/api';
 
 async function readError(response: Response): Promise<Error> {
   const payload = await response.json().catch(() => ({}));
+  // A refused anonymous turn is not a failure to report in the transcript: the
+  // dialog it opens explains what to do, and the message stays where it is.
+  if (isGuestLimit(payload.detail)) {
+    notifyGuestLimit();
+    return new Error(t('auth.turnLimitBody'));
+  }
   return new Error(payload.msg || payload.error?.message ||
     (typeof payload.detail === 'string' ? payload.detail : t('error.status', { status: response.status })));
 }

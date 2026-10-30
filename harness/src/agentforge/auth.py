@@ -20,11 +20,21 @@ import secrets
 import time
 from datetime import datetime, timedelta, timezone
 
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
+
 from agentforge.models import new_id
 
 logger = logging.getLogger(__name__)
 
 SESSION_COOKIE = "agentforge_session"
+# Anonymous visitors get an owner id of their own so the ownership filters in
+# `store.py` keep working unchanged: a guest transcript is owned by the guest,
+# not by nobody, which is what makes "sign in to keep this conversation" a
+# transfer rather than a lookup with no owner to match.
+GUEST_COOKIE = "agentforge_guest"
+GUEST_PREFIX = "guest_"
+_GUEST_ID = re.compile(r"^guest_[A-Za-z0-9_-]{16,64}$")
 USERNAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{2,31}$")
 MIN_PASSWORD = 10
 MAX_PASSWORD = 200
@@ -37,6 +47,24 @@ _DUMMY_HASH = None
 # once by the HTTP middleware; a tool, a background run or a resumed checkpoint
 # inherits it and can never override it.
 current_user: contextvars.ContextVar[str] = contextvars.ContextVar("agentforge_user", default="")
+
+
+def new_guest_id() -> str:
+    return GUEST_PREFIX + secrets.token_urlsafe(18)
+
+
+def is_guest(identity: str | None) -> bool:
+    return bool(identity and identity.startswith(GUEST_PREFIX))
+
+
+def valid_guest_id(value: str | None) -> bool:
+    """A cookie value is only trusted after this shape check.
+
+    There is nothing to forge here: an invented id is simply a fresh, empty
+    visitor. The check exists so a malformed cookie cannot become a database
+    key or leak into anything that treats ids as identifiers.
+    """
+    return bool(value and _GUEST_ID.match(value))
 
 
 class AuthError(Exception):
@@ -100,6 +128,9 @@ class AuthService:
         await self.store.db.users.create_index("username", unique=True)
         await self.store.db.auth_sessions.create_index("token_hash", unique=True)
         await self.store.db.auth_sessions.create_index("user_id")
+        # One counter row per visitor per day; the unique index is what makes the
+        # increment safe when two tabs of the same visitor start a turn together.
+        await self.store.db.guest_usage.create_index([("id", 1), ("day", 1)], unique=True)
 
     # ---------------------------------------------------------------- accounts
     async def create_user(self, username: str, password: str) -> dict:
@@ -186,6 +217,102 @@ class AuthService:
     async def prune(self) -> int:
         result = await self.store.db.auth_sessions.delete_many({"expires_at": {"$lte": _iso(_now())}})
         return result.deleted_count
+
+    # ----------------------------------------------------------- anonymous trial
+    async def claim_guest_turn(self, guest_id: str, per_guest: int, daily: int) -> str | None:
+        """Reserve one anonymous turn; return a refusal reason, or None if granted.
+
+        The turn is charged before the run and handed back when refused, so a
+        visitor who hits the wall is not also billed for asking. Two counters:
+        the visitor's own budget, and a site-wide daily one -- clearing a cookie
+        makes a new visitor, so the per-visitor limit alone is not a budget.
+        """
+        if per_guest <= 0:
+            return "disabled"
+        day = _iso(_now())[:10]
+        used = await self._bump_guest(guest_id, day)
+        if used > per_guest:
+            await self._bump_guest(guest_id, day, -1)
+            return "visitor"
+        if daily > 0 and await self._bump_guest("*", day) > daily:
+            await self._bump_guest("*", day, -1)
+            await self._bump_guest(guest_id, day, -1)
+            return "daily"
+        return None
+
+    async def _bump_guest(self, key: str, day: str, step: int = 1) -> int:
+        query = {"id": key, "day": day}
+        try:
+            row = await self.store.db.guest_usage.find_one_and_update(
+                query, {"$inc": {"turns": step}}, upsert=True,
+                return_document=ReturnDocument.AFTER)
+        except DuplicateKeyError:
+            # Two tabs of one visitor raced on the upsert; the second one retries
+            # against the row the first created.
+            row = await self.store.db.guest_usage.find_one_and_update(
+                query, {"$inc": {"turns": step}}, return_document=ReturnDocument.AFTER)
+        return int(row.get("turns", 0)) if row else 0
+
+    async def guest_budget(self, guest_id: str, per_guest: int, daily: int) -> dict:
+        """What the interface needs to say "3 free questions left"."""
+        if per_guest <= 0 or not valid_guest_id(guest_id):
+            return {"allowed": False, "turnsLeft": 0, "turnsTotal": 0}
+        day = _iso(_now())[:10]
+        left = max(0, per_guest - await self._guest_turns(guest_id, day))
+        if daily > 0:
+            left = min(left, max(0, daily - await self._guest_turns("*", day)))
+        return {"allowed": True, "turnsLeft": left, "turnsTotal": per_guest}
+
+    async def _guest_turns(self, key: str, day: str) -> int:
+        row = await self.store.db.guest_usage.find_one({"id": key, "day": day})
+        return int(row.get("turns", 0)) if row else 0
+
+    async def adopt_guest(self, guest_id: str, user_id: str) -> dict:
+        """Hand an anonymous transcript to the account that just signed in.
+
+        The guest id comes from that browser's own cookie, so an account cannot
+        arrive holding somebody else's trial. Only what a guest can create moves:
+        agents, skills and MCP servers are behind the login wall already.
+        """
+        if not valid_guest_id(guest_id) or not user_id:
+            return {}
+        counts = {}
+        for collection in ("sessions", "traces", "turns", "tool_calls",
+                           "checkpoints", "artifacts"):
+            rows = await self.store.db[collection].find(
+                {"owner_id": guest_id}, {"id": 1}).to_list(length=10000)
+            ids = [row["id"] for row in rows if row.get("id")]
+            if not ids:
+                continue
+            # An id collision means this browser was signed in here before. The
+            # guest rows are the ones on screen, so they keep the id.
+            await self.store.db[collection].delete_many(
+                {"owner_id": user_id, "id": {"$in": ids}})
+            result = await self.store.db[collection].update_many(
+                {"owner_id": guest_id, "id": {"$in": ids}}, {"$set": {"owner_id": user_id}})
+            counts[collection] = result.modified_count
+        await self.store.db.guest_usage.delete_many({"id": guest_id})
+        if any(counts.values()):
+            logger.info("Guest %s signed in as %s; moved %s", guest_id, user_id, counts)
+        return counts
+
+    async def prune_guests(self, retention_hours: float) -> dict:
+        """Delete anonymous transcripts nobody ever claimed."""
+        cutoff = _iso(_now() - timedelta(hours=retention_hours))[:10]
+        stale = await self.store.db.guest_usage.find(
+            {"day": {"$lt": cutoff}, "id": {"$ne": "*"}}, {"id": 1}).to_list(length=10000)
+        ids = [row["id"] for row in stale if valid_guest_id(row.get("id", ""))]
+        counts = {}
+        if ids:
+            for collection in ("sessions", "traces", "turns", "tool_calls",
+                               "checkpoints", "artifacts"):
+                result = await self.store.db[collection].delete_many(
+                    {"owner_id": {"$in": ids}})
+                if result.deleted_count:
+                    counts[collection] = result.deleted_count
+            logger.info("Pruned %d abandoned guest transcripts: %s", len(ids), counts)
+        await self.store.db.guest_usage.delete_many({"day": {"$lt": cutoff}})
+        return counts
 
     # --------------------------------------------------------------- bootstrap
     async def bootstrap(self, username: str, password: str) -> dict | None:

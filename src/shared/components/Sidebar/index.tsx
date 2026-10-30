@@ -31,7 +31,9 @@ const timestamp = (item: CovIdListItem) => {
 
 export default function Sidebar({ isLoading, account }: {
   isLoading: boolean;
-  account?: { name: string; onSignOut: () => void };
+  // `name` present means signed in; `turnsLeft` present means the anonymous
+  // trial is running. Both live in one slot because only one is ever true.
+  account?: { name?: string; turnsLeft?: number; onSignOut?: () => void; onSignIn?: () => void };
 }) {
   const { t, dateLocale } = useLanguage()
   const { covList } = useChat()
@@ -133,9 +135,15 @@ export default function Sidebar({ isLoading, account }: {
           {!groups.length && <p className="sidebar-empty">{query ? t('sidebar.noMatches') : t('sidebar.empty')}</p>}
         </nav>
         {account && <div className="sidebar-account">
-          <span className="sidebar-avatar" aria-hidden="true">{account.name.slice(0, 1).toUpperCase()}</span>
-          <span className="sidebar-footer-label" title={t('auth.signedInAs', { name: account.name })}>{account.name}</span>
-          <button type="button" className="sidebar-signout" onClick={account.onSignOut} aria-label={t('auth.signOut')} title={t('auth.signOut')}>{t('auth.signOut')}</button>
+          {account.name ? <>
+            <span className="sidebar-avatar" aria-hidden="true">{account.name.slice(0, 1).toUpperCase()}</span>
+            <span className="sidebar-footer-label" title={t('auth.signedInAs', { name: account.name })}>{account.name}</span>
+            <button type="button" className="sidebar-signout" onClick={() => account.onSignOut?.()} aria-label={t('auth.signOut')} title={t('auth.signOut')}>{t('auth.signOut')}</button>
+          </> : <>
+            <span className="sidebar-avatar" aria-hidden="true">·</span>
+            <span className="sidebar-footer-label" title={t('auth.turnsLeft', { count: account.turnsLeft ?? 0 })}>{t('auth.turnsLeft', { count: account.turnsLeft ?? 0 })}</span>
+            <button type="button" className="sidebar-signout" onClick={() => account.onSignIn?.()} aria-label={t('auth.signInAction')} title={t('auth.signInAction')}>{t('auth.signInAction')}</button>
+          </>}
         </div>}
         <button type="button" className="sidebar-footer" disabled={isLoading} onClick={() => setRecords(true)} aria-label={t('sidebar.openManager')}>
           <span className="sidebar-avatar">AI</span><span className="sidebar-footer-label">{t('sidebar.myChats')}<small>{t('sidebar.count', { count: covList.length })}</small></span><SidebarIcon name="more" />

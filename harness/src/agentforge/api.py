@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field, StrictBool
 
 from agentforge.config import Settings
 from agentforge.artifacts import ArtifactEventBus
-from agentforge.auth import SESSION_COOKIE, AuthError, AuthService, current_user
+from agentforge.auth import (GUEST_COOKIE, SESSION_COOKIE, AuthError, AuthService,
+                             current_user, is_guest, new_guest_id, valid_guest_id)
 from agentforge.capabilities import (MCPServerRequest, MAX_CONFIG, parse_config, parse_servers,
                                      public_server, run_servers, server_tools)
 from agentforge.context import ContextManager
@@ -261,6 +262,7 @@ def create_app(settings=None, store=None, gateway=None):
             await pool.start()
             await auth.setup()
             await auth.prune()
+            await auth.prune_guests(settings.guest_retention_hours)
             # The built-in agent is shared: its empty owner means every account
             # may read and run it, and nobody may replace it.
             if await store.get("agents", "default") is None:
@@ -304,7 +306,41 @@ def create_app(settings=None, store=None, gateway=None):
     # The only routes reachable without a session. Everything else under /api is
     # refused before it reaches a handler, so a new endpoint is protected by
     # default instead of by remembering to add a check.
-    PUBLIC_API = {"/api/auth/login", "/api/auth/logout", "/api/auth/me"}
+    PUBLIC_API = {"/api/auth/login", "/api/auth/logout"}
+
+    # What an anonymous visitor may reach: reading the catalogue, running a real
+    # turn, and answering the approval that turn raised. Anything that changes
+    # the installation (a new agent, a skill, an MCP server, a sandbox lease) is
+    # deliberately absent, so it answers 401 and the interface asks to sign in.
+    GUEST_ROUTES = {
+        ("GET", "/api/models"), ("GET", "/api/agents"),
+        ("POST", "/api/agents/run"), ("POST", "/api/sessions"),
+        ("POST", "/api/chat/completions"),
+        ("GET", "/api/approvals"), ("GET", "/api/interventions/policy"),
+    }
+
+    def guest_allowed(method: str, path: str) -> bool:
+        if method in {"GET", "HEAD"} and path.startswith(("/api/sessions/", "/api/files/")):
+            return True
+        if method == "POST" and path.startswith(("/api/sessions/", "/api/approvals/")):
+            # Stopping a run and answering its approval. Deleting a session is a
+            # DELETE and stays behind the wall.
+            return True
+        return (method, path) in GUEST_ROUTES
+
+    async def bill_guest_turn():
+        """Charge an anonymous turn to the visitor, before the model is called.
+
+        Raises 403 with a machine-readable reason so the interface can open the
+        login dialog instead of showing a generic failure.
+        """
+        identity = current_user.get()
+        if not is_guest(identity):
+            return
+        refusal = await auth.claim_guest_turn(identity, settings.guest_turns,
+                                              settings.guest_daily_turns)
+        if refusal:
+            raise HTTPException(403, detail={"code": "guest_limit", "reason": refusal})
 
     def owner_id() -> str:
         """The calling account, from the cookie alone.
@@ -359,23 +395,47 @@ def create_app(settings=None, store=None, gateway=None):
             logger.warning("Session lookup failed; treating the request as anonymous.",
                            exc_info=True)
             user = None
-        claim = current_user.set(user["id"]) if user else None
+
+        # A visitor without a session is not turned away at the door: it is given
+        # an identity of its own so the ownership filters work unchanged, and only
+        # the routes in GUEST_ROUTES are reachable through it.
+        guest, issued = "", ""
+        if user is None and path not in PUBLIC_API:
+            permitted = path == "/api/auth/me" or (
+                settings.guest_turns > 0 and guest_allowed(request.method, path))
+            if not permitted:
+                return JSONResponse({"detail": "Not authenticated.",
+                                     "code": "login_required"}, status_code=401)
+            candidate = request.cookies.get(GUEST_COOKIE, "")
+            guest = candidate if valid_guest_id(candidate) else new_guest_id()
+            issued = "" if valid_guest_id(candidate) else guest
+
+        identity = user["id"] if user else guest
+        claim = current_user.set(identity) if identity else None
         try:
-            if user is None and path not in PUBLIC_API:
-                return JSONResponse({"detail": "Not authenticated."}, status_code=401)
-            if user is not None and request.method not in {"GET", "HEAD", "OPTIONS"} \
+            if identity and request.method not in {"GET", "HEAD", "OPTIONS"} \
                     and not same_origin(request):
                 return JSONResponse({"detail": "Cross-origin request rejected."},
                                     status_code=403)
             if user is not None:
                 request.state.user = user
-            return await call_next(request)
+            if guest:
+                request.state.guest = guest
+            response = await call_next(request)
         finally:
             if claim is not None:
                 current_user.reset(claim)
+        if issued:
+            # A week is long enough to be worth keeping and short enough that a
+            # stale anonymous transcript is not defended forever; the daily
+            # counter resets on its own, but the transcript does not.
+            response.set_cookie(GUEST_COOKIE, issued, max_age=7 * 24 * 3600,
+                                httponly=True, samesite="lax",
+                                secure=settings.cookie_secure, path="/")
+        return response
 
     @app.post("/api/auth/login")
-    async def login(payload: LoginRequest, response: Response):
+    async def login(payload: LoginRequest, request: Request, response: Response):
         if not app.state.ready:
             raise HTTPException(503, "MongoDB unavailable. Start docker compose up -d mongo and "
                                      "restart Harness.")
@@ -387,6 +447,16 @@ def create_app(settings=None, store=None, gateway=None):
         token = await auth.start_session(user["id"])
         response.set_cookie(SESSION_COOKIE, token, max_age=int(settings.session_hours * 3600),
                             httponly=True, samesite="lax", secure=settings.cookie_secure, path="/")
+        # Signing in is the moment a trial becomes an account: the transcript the
+        # visitor was looking at moves over instead of vanishing. Failing here
+        # must not fail the login -- the account exists and the cookie is set.
+        guest = request.cookies.get(GUEST_COOKIE, "")
+        if valid_guest_id(guest):
+            try:
+                await auth.adopt_guest(guest, user["id"])
+            except Exception:
+                logger.warning("Could not adopt guest transcript %s", guest, exc_info=True)
+            response.delete_cookie(GUEST_COOKIE, path="/")
         logger.info("login user=%s", user["username"])
         return {"code": 200, "data": {"id": user["id"], "username": user["username"]}}
 
@@ -398,10 +468,24 @@ def create_app(settings=None, store=None, gateway=None):
 
     @app.get("/api/auth/me")
     async def whoami(request: Request):
+        """Who is calling, plus how much trial is left.
+
+        Always public: a page has to be able to ask "am I signed in" before it
+        can decide anything, and the anonymous budget has to be readable without
+        spending a turn.
+        """
         user = getattr(request.state, "user", None)
-        if user is None:
-            return {"code": 200, "data": None}
-        return {"code": 200, "data": {"id": user["id"], "username": user["username"]}}
+        if user is not None:
+            return {"code": 200, "data": {"id": user["id"], "username": user["username"]},
+                    "guest": {"allowed": False, "turnsLeft": 0, "turnsTotal": 0}}
+        guest = getattr(request.state, "guest", "")
+        try:
+            budget = await auth.guest_budget(guest, settings.guest_turns,
+                                             settings.guest_daily_turns)
+        except Exception:
+            logger.warning("Guest budget lookup failed.", exc_info=True)
+            budget = {"allowed": False, "turnsLeft": 0, "turnsTotal": 0}
+        return {"code": 200, "data": None, "guest": budget}
 
     @app.middleware("http")
     async def log_request(request, call_next):
@@ -845,6 +929,9 @@ def create_app(settings=None, store=None, gateway=None):
             raise HTTPException(422, "Use nonempty input and a unique session ID.")
         if request.fileIds:
             raise HTTPException(422, "File uploads require Tier 2.")
+        # Resuming a run does not buy a new turn: it continues the one already paid for.
+        if not request.resume:
+            await bill_guest_turn()
         # The browser supplies sessionId, so an id that already exists has to be
         # proven to be ours before the run may continue it.
         row = await store.db.sessions.find_one({"id": request.sessionId}, {"_id": 0})
@@ -889,6 +976,7 @@ def create_app(settings=None, store=None, gateway=None):
         definition = await store.get("agents", request.agent_id, owner=uid)
         if not definition:
             raise HTTPException(404, "Agent not found.")
+        await bill_guest_turn()
         session_id, turn_id = new_id(), new_id()
         agent, remote = await prepare_agent(AgentDefinition.model_validate(definition))
         bus, _ = start(agent, request.task, session_id, turn_id, remote)
@@ -1087,6 +1175,7 @@ def create_app(settings=None, store=None, gateway=None):
             raise HTTPException(503, "Configure the DeepSeek API key in the Harness environment and restart.")
         if not request.stream:
             raise HTTPException(422, "Use stream=true.")
+        await bill_guest_turn()
         async def frames():
             try:
                 user_request = next((m.content for m in reversed(request.messages) if m.role == "user"), "")

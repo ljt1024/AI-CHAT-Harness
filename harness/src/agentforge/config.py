@@ -50,6 +50,19 @@ class Settings(BaseSettings):
     # only", which is what a single-host deployment needs.
     allowed_origins: str = ""
 
+    # Anonymous trial. A visitor may browse and run a few real turns before the
+    # interface asks for an account, so the login wall sits where it costs the
+    # visitor something rather than at the front door. `guest_turns=0` turns the
+    # whole thing off and puts every request back behind the login wall.
+    guest_turns: int = Field(default=4, ge=0, le=100)
+    # A ceiling for the whole site, not per visitor: a cleared cookie is a new
+    # visitor, and without this one person could spend the operator's budget by
+    # refreshing. 0 means "no daily cap" and is only sane on a private network.
+    guest_daily_turns: int = Field(default=200, ge=0)
+    # Anonymous transcripts are deleted after this long. They belong to nobody,
+    # so keeping them indefinitely would just hoard the operator's database.
+    guest_retention_hours: float = Field(default=72, gt=0, le=720)
+
     @field_validator("sandbox_image")
     @classmethod
     def _known_image(cls, value: str) -> str:
