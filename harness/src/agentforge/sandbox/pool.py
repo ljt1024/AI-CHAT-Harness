@@ -212,6 +212,31 @@ class SandboxPool:
             self.entries.pop(lease.sandbox.id, None)
         await self.runner.destroy(lease.sandbox)
 
+    async def discard(self, session_id: str) -> bool:
+        """Forget a session's sandbox: container, lease and directory.
+
+        `release` deliberately keeps all three so the same conversation can
+        resume onto the files it produced. Deleting the conversation means none
+        of them should outlive it — and the directory otherwise never goes
+        away: `workspaces` protects it from every sweep, and nothing prunes
+        that map.
+        """
+        async with self.lock:
+            lease = next((e for e in self.entries.values()
+                          if e.session_id == session_id), None)
+            workspace = self.workspaces.pop(session_id, None)
+            if lease is not None:
+                lease.state = SandboxState.DESTROY
+                self.entries.pop(lease.sandbox.id, None)
+        if lease is not None:
+            await self.runner.destroy(lease.sandbox)
+        if workspace is not None:
+            discard = getattr(self.runner, "discard_workspace", None)
+            if discard is not None:
+                # Runs in a thread: removing a directory holds no event loop work.
+                await asyncio.to_thread(discard, workspace)
+        return lease is not None or workspace is not None
+
     async def reap(self):
         async with self.lock:
             expired = [e for e in self.entries.values() if e.state == SandboxState.CACHED

@@ -1087,6 +1087,14 @@ def create_app(settings=None, store=None, gateway=None):
         if result.deleted_count == 0:
             raise HTTPException(404, "Session not found.")
         finished_runs.pop(session_id, None)
+        # The conversation is gone, so nothing it produced may stay behind: the
+        # sandbox would otherwise keep running with the files it wrote, and the
+        # workspace directory is protected from every sweep while the pool
+        # remembers it.
+        await pool.discard(session_id)
+        isolated_tools.pop(session_id, None)
+        run_sandboxes.pop(session_id, None)
+        session_owners.pop(session_id, None)
         return {"code": 200, "data": {"id": session_id, "deleted": True}}
 
     @app.get("/api/approvals")

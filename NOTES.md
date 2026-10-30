@@ -43,3 +43,4 @@
 - ESLint adoption is scoped to migrated infrastructure and agent API TypeScript; legacy frontend TypeScript lint debt is deferred. The immutable end/ tree is excluded.
 - Browser transport smoke passed on desktop 1440x1000 and mobile 390x844 using the explicitly opt-in protocol stub and installed Chrome. Screenshots: harness/out/browser/.
 - Production API integration covers create agent, run, approval/denial, persisted trace and usage, using mock MongoDB and deterministic adapters. Real model and Docker integration remain pending.
+- Sandbox teardown: releasing a lease keeps the container and workspace so the same session resumes onto its files, but `pool.workspaces` never dropped entries -- and the sweep keeps whatever is in that map, so a deleted conversation's files stayed on disk forever. `pool.discard(session_id)` now destroys the lease and removes the directory when a session is deleted (330 backend tests cover both halves: release keeps, discard removes).

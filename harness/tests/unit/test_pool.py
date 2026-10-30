@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -118,5 +119,52 @@ async def test_same_session_cannot_create_two_containers(tmp_path):
         assert sum(isinstance(result, SandboxUnavailable) for result in results) == 1
         assert len(pool.entries) == 1
         assert not pool.pending_sessions
+    finally:
+        await pool.close()
+
+
+async def test_release_keeps_files_but_discard_removes_them(tmp_path):
+    """Release is "see you next turn"; discard is "this conversation is gone"."""
+    class RecordingRunner(FakeRunner):
+        def __init__(self, root):
+            super().__init__(root)
+            self.discarded = []
+
+        def discard_workspace(self, workspace):
+            root = Path(str(getattr(workspace, "root", workspace)))
+            self.discarded.append(root)
+            for path in sorted(root.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+                path.rmdir() if path.is_dir() else path.unlink()
+            root.rmdir()
+            return True
+
+    pool = SandboxPool(RecordingRunner(tmp_path), warm_size=0, max_size=4)
+    try:
+        lease = await pool.acquire("session-a")
+        (lease.sandbox.workspace.root / "report.md").write_text("secret")
+        kept = lease.sandbox.workspace.root
+        await pool.release("session-a")
+        assert kept.is_dir(), "releasing must keep the files for the next turn"
+        assert "session-a" in pool.workspaces
+
+        assert await pool.discard("session-a") is True
+        assert not lease.sandbox.alive, "the container must not outlive the conversation"
+        assert not kept.exists(), "the workspace must not outlive the conversation either"
+        assert "session-a" not in pool.workspaces
+        assert not any(entry.session_id == "session-a" for entry in pool.entries.values())
+
+        # Nothing remembers the name now, so a new run cannot land on old files.
+        again = await pool.acquire("session-a")
+        assert again.sandbox.workspace.root != kept
+        assert not (again.sandbox.workspace.root / "report.md").exists()
+        await pool.release("session-a")
+    finally:
+        await pool.close()
+
+
+async def test_discard_of_an_unknown_session_changes_nothing(tmp_path):
+    pool = SandboxPool(FakeRunner(tmp_path), warm_size=0, max_size=2)
+    try:
+        assert await pool.discard("never-ran") is False
     finally:
         await pool.close()

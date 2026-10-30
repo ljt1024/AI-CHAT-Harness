@@ -210,3 +210,31 @@ async def test_approvals_endpoint_survives_database_outage(tmp_path):
             assert (await client.get("/api/approvals")).status_code == 200
             app.state.ready = False
             assert (await client.get("/api/approvals")).status_code == 200
+
+
+async def test_deleting_a_session_discards_its_sandbox(tmp_path, monkeypatch):
+    """A deleted conversation must not leave its container and files behind.
+
+    The pool otherwise still knows the workspace, which keeps every sweep from
+    reclaiming a directory holding this session's files.
+    """
+    from agentforge.sandbox.pool import SandboxPool
+
+    discarded = []
+
+    async def fake_discard(self, session_id):
+        discarded.append(session_id)
+        return True
+
+    monkeypatch.setattr(SandboxPool, "discard", fake_discard)
+    gateway = ModelGateway()
+    gateway.register("deepseek", Answer())
+    store = make_store()
+    app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path, sandbox_warm_size=0),
+                     store, gateway)
+    async with app.router.lifespan_context(app):
+        async with AuthedClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://test") as client:
+            await store.put("sessions", {"id": "throwaway", "sessionId": "throwaway"})
+            assert (await client.delete("/api/sessions/throwaway")).status_code == 200
+    assert discarded == ["throwaway"]
