@@ -1,7 +1,9 @@
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from agentforge.models import DEFAULT_SANDBOX_IMAGE, SandboxPolicy
 
 
 class Settings(BaseSettings):
@@ -29,3 +31,16 @@ class Settings(BaseSettings):
     sandbox_warm_size: int = Field(default=2, ge=0, le=8)
     sandbox_max_size: int = Field(default=8, ge=1, le=32)
     sandbox_idle_seconds: int = Field(default=600, ge=1)
+    # The image a session starts in when it does not ask for one. Anything here
+    # has to be an image SandboxPolicy admits: the wrong registry prefix would
+    # otherwise give every session an arbitrary root filesystem of our choosing.
+    sandbox_image: str = DEFAULT_SANDBOX_IMAGE
+
+    @field_validator("sandbox_image")
+    @classmethod
+    def _known_image(cls, value: str) -> str:
+        try:
+            SandboxPolicy(image=value)
+        except Exception as exc:
+            raise ValueError(f"Unknown sandbox image {value!r}.") from exc
+        return value

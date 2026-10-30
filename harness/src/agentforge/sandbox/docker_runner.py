@@ -62,11 +62,14 @@ class DockerRunner:
                     raise SandboxUnavailable("Docker unavailable. Start Docker and retry.") from exc
         return self.client
 
+    def _runtime_ids(self) -> tuple[int, int]:
+        """The account containers run as, which is never root whatever we run as."""
+        return (1000, 1000) if os.getuid() == 0 else (os.getuid(), os.getgid())
+
     def options(self, workspace: Path, image: str, image_environment=()):
         policy = SandboxPolicy(image=image)
         profile = Path(__file__).with_name("seccomp.json").read_text()
-        uid = os.getuid() if os.getuid() != 0 else 1000
-        gid = os.getgid() if os.getuid() != 0 else 1000
+        uid, gid = self._runtime_ids()
         return {
             "image": policy.image, "command": ["sleep", "infinity"], "detach": True,
             "read_only": True, "tmpfs": {"/tmp": "rw,nosuid,nodev,noexec,size=256m,mode=1777"},
@@ -88,6 +91,7 @@ class DockerRunner:
         workspace = workspace or Workspace(self.root / identity)
         if not workspace.root.is_relative_to(self.root):
             raise ValueError("Sandbox workspace is outside the managed root.")
+        self._claim_workspace(workspace.root)
         try:
             descriptor = await asyncio.to_thread(client.images.get, image)
             environment = descriptor.attrs.get("Config", {}).get("Env", []) or []
@@ -106,6 +110,22 @@ class DockerRunner:
         # The directory deliberately survives: an idle sandbox is reaped and the same
         # session rebuilds onto the same workspace, so its files must still be there.
         # Leftovers are reclaimed by sweep() once no session remembers them.
+
+    def _claim_workspace(self, root: Path) -> None:
+        """Hand a workspace to the account the container runs as.
+
+        A backend started by root creates directories root owns, and a container
+        that refuses to be root then cannot write into the one directory it is
+        given -- every file write fails while everything else looks healthy.
+        Running as an ordinary user this is a no-op: the directory is already ours.
+        """
+        root.mkdir(parents=True, exist_ok=True)
+        if os.geteuid() != 0:
+            return
+        try:
+            os.chown(root, *self._runtime_ids())
+        except OSError as exc:
+            logger.warning("Could not hand %s to the sandbox account: %s", root.name, exc)
 
     def discard_workspace(self, workspace):
         """Remove a sandbox directory, refusing anything outside its own root."""

@@ -143,3 +143,33 @@ async def test_sweep_removes_containers_whose_owner_is_gone(tmp_path):
     stranger.remove.assert_not_called()
     assert not (runner.state_dir / "orphan.json").exists(), "a dead instance file is dropped"
     assert (runner.state_dir / "stranger.json").exists(), "a live backend keeps its claim"
+
+
+def test_a_root_backend_hands_the_workspace_to_the_sandbox_account(tmp_path, monkeypatch):
+    """Running as root makes every directory we create root-owned, and the
+    container -- which is refused root by design -- cannot write into it."""
+    import os
+
+    runner = DockerRunner(tmp_path, MagicMock())
+    claimed: list = []
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+    monkeypatch.setattr(os, "chown", lambda path, uid, gid: claimed.append((path, uid, gid)))
+    target = tmp_path / "session" / "workspace"
+    runner._claim_workspace(target)
+    assert target.is_dir()
+    # Never root-owned, and never the caller's account when the caller is root.
+    assert claimed == [(target, 1000, 1000)]
+
+
+def test_an_unprivileged_backend_leaves_ownership_alone(tmp_path, monkeypatch):
+    """As an ordinary user chown is not ours to make, and not needed either."""
+    import os
+
+    runner = DockerRunner(tmp_path, MagicMock())
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(os, "getuid", lambda: 1000)
+    monkeypatch.setattr(os, "chown", lambda *args: pytest.fail("must not chown"))
+    target = tmp_path / "mine"
+    runner._claim_workspace(target)
+    assert target.is_dir()
