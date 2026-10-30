@@ -1,0 +1,41 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+.env*
+!.env.example
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.agentforge/
+out/
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local conversations, uploads, checkpoints and secrets
+end/local_storage/
+# MCP startup file holds bearer tokens; copy the example and fill it in
+config/mcp.json
+# 16 MB CJK font for the frozen reference backend; download per end/assets/fonts/README.md
+end/assets/fonts/*.otf
+# Agent working memory (never commit)
+.workbuddy/

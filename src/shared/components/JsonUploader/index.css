@@ -1,0 +1,101 @@
+.json-uploader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.upload-area {
+  width: 100%;
+  min-height: 200px;
+  border: 2px dashed var(--border-strong);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  padding: 20px;
+  text-align: center;
+  background-color: var(--surface-elevated);
+}
+
+.upload-area:hover {
+  border-color: var(--primary-color);
+  background-color: var(--surface-hover);
+}
+
+.upload-area.dragging {
+  border-color: var(--primary-color);
+  background-color: var(--button-ghost-bg);
+}
+
+.upload-area.loading {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.upload-icon {
+  position: relative;
+  width: 58px;
+  height: 62px;
+  margin-bottom: 16px;
+  color: var(--primary-color);
+}
+
+.upload-icon svg {
+  width: 100%;
+  height: 100%;
+  fill: color-mix(in srgb, var(--primary-color) 10%, transparent);
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.upload-icon .upload-icon-mark {
+  fill: none;
+  stroke-width: 2.5;
+}
+
+.upload-icon span {
+  position: absolute;
+  right: -7px;
+  bottom: 2px;
+  padding: 3px 4px;
+  border: 2px solid var(--surface-elevated);
+  border-radius: 4px;
+  background: var(--primary-color);
+  color: var(--user-bubble-text);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .04em;
+}
+
+.upload-text {
+  color: var(--text-color);
+}
+
+.upload-hint {
+  font-size: 12px;
+  color: var(--text-muted-color);
+  margin-top: 8px;
+}
+
+.upload-status {
+  font-size: 16px;
+  color: var(--primary-color);
+}
+
+.error-message {
+  margin-top: 16px;
+  padding: 8px 12px;
+  background-color: var(--danger-soft-bg);
+  color: var(--danger-color);
+  border-radius: 4px;
+  width: 100%;
+  text-align: center;
+}

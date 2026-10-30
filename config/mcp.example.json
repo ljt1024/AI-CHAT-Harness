@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "Fetch": {
+      "type": "streamable_http",
+      "url": "https://mcp.api-inference.modelscope.net/<deployment>/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-modelscope-token>"
+      }
+    },
+    "JdSelection": {
+      "type": "streamable_http",
+      "url": "https://mcp.api-inference.modelscope.net/<deployment>/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-modelscope-token>"
+      },
+      "enabled": false
+    }
+  }
+}

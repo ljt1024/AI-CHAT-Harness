@@ -1,0 +1,317 @@
+import { useLanguage } from '@/app/providers/LanguageContext';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import ReactMarkdown from 'react-markdown';
+import { resolveFileDownloadUrl } from '@/shared/utils/fileDownloads';
+import remarkGfm from 'remark-gfm';
+import hljs from 'highlight.js';
+import javascript from 'highlight.js/lib/languages/javascript';
+
+import 'highlight.js/styles/atom-one-dark.css';
+import './index.css'
+
+// hljs不支持vue 手动注册用js表示
+hljs.registerLanguage('vue', javascript);
+hljs.registerLanguage('mermaid', ()=> {
+    return {
+        name: 'mermaid',
+        contains: [
+            {
+                className: 'keyword', begin: '\\b(graph|sequenceDiagram|gantt)\\b'
+            },
+            {
+                className: 'title', begin: 'title', end: '$'
+            },
+            {
+                className: 'commment', begin: '%%', end: '$'
+            }
+        ]
+    }
+})
+
+interface CodeBlockProps {
+  node?: any;
+  className?: string;
+  children?: React.ReactNode;
+  [key: string]: any;
+}
+
+const HTML_LANGUAGES = new Set(['html', 'htm', 'xml', 'xhtml', 'svg']);
+
+const buildPreviewDocument = (source: string) => {
+  const trimmed = source.trim();
+  if (/<!doctype html>|<html[\s>]/i.test(trimmed)) {
+    return source;
+  }
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  </head>
+  <body>
+${source}
+  </body>
+</html>`;
+};
+
+const isHtmlLikeCode = (language: string, source: string) => {
+  if (HTML_LANGUAGES.has(language.toLowerCase())) {
+    return true;
+  }
+  return language === 'plaintext' && /<\/?[a-z][\s\S]*>/i.test(source.trim());
+};
+
+// 自定义代码块渲染
+const codeBlockRenderer = ({ className, codeText }: { className?: string; codeText: string }) => {
+    const { t } = useLanguage();
+    const [isCopy, setIsCopy] = useState(false);
+    const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+    const [isPreviewFullscreen, setIsPreviewFullscreen] = useState(false);
+    const previewDialogRef = useRef<HTMLDivElement>(null);
+    const match = /language-([\w-]+)/.exec(className || '');
+    // console.log(children)
+    let language = (match ? match[1] : 'plaintext').toLowerCase();
+    const enableHtmlPreview = isHtmlLikeCode(language, codeText);
+    const previewDoc = useMemo(() => {
+        if (!enableHtmlPreview) {
+            return '';
+        }
+        return buildPreviewDocument(codeText);
+    }, [enableHtmlPreview, codeText]);
+
+    useEffect(() => {
+        if (!isPreviewOpen) {
+            return;
+        }
+
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+
+        const handleEsc = (event: KeyboardEvent) => {
+            if (event.key === 'Escape' && !document.fullscreenElement) {
+                setIsPreviewOpen(false);
+            }
+        };
+
+        const handleFullscreenChange = () => {
+            const currentFullscreenElement = document.fullscreenElement;
+            setIsPreviewFullscreen(currentFullscreenElement === previewDialogRef.current);
+        };
+
+        document.addEventListener('keydown', handleEsc);
+        document.addEventListener('fullscreenchange', handleFullscreenChange);
+
+        return () => {
+            document.body.style.overflow = previousOverflow;
+            document.removeEventListener('keydown', handleEsc);
+            document.removeEventListener('fullscreenchange', handleFullscreenChange);
+        };
+    }, [isPreviewOpen]);
+    // console.log(language, children)
+    // 模型返回的code有时候并不会携带language
+    // if (language === 'plaintext') {
+    //     language = hljs.highlightAuto(children).language
+    // }
+    // let chacheLang = new Map()
+    // if (!chacheLang.has(language)) {
+    //     if (!hljs.listLanguages().includes(language)) {
+    //         language = 'plaintext'
+    //         chacheLang.set(language, 'plaintext')
+    //     } else {
+    //         chacheLang.set(language, language)
+    //     }
+    // }
+    // language = chacheLang.get(language)
+    let codeHTML = ''
+    try {
+        codeHTML = hljs.highlight(codeText, { language }).value;
+    } catch (error: any) {
+        // 插件中找不到对应的语言。默认使用plaintext
+        // codeHTML = hljs.highlight(children, { language: 'plaintext' }).value;
+        // console.log(hljs.listLanguages())
+        const regex = /Error: Unknown language\b/;
+        const match = error.toString().match(regex);
+        if (match) {
+            language = 'plaintext';
+            codeHTML = hljs.highlight(codeText, { language: 'plaintext' }).value;
+        }
+        console.log(error, 'error')
+    }
+    // hljs.highlightAll()
+    const handleCopy = () => {
+        if (isCopy) return;
+        // https 和 本地支持
+        if (navigator.clipboard) {
+            navigator.clipboard
+                .writeText(codeText)
+                .then(() => {
+                    console.log('已复制到剪贴板！');
+                    setIsCopy(true)
+                    setTimeout(() => {
+                        setIsCopy(false)
+                    }, 1000)
+                })
+                .catch((err) => {
+                    console.error('复制失败:', err);
+                });
+        } else {
+            const textArea = document.createElement("textarea");
+            textArea.value = codeText;
+            document.body.appendChild(textArea);
+            textArea.select();
+
+            try {
+                document.execCommand("copy");
+                console.log('代码已复制到剪贴板！');
+                setIsCopy(true)
+                setTimeout(() => {
+                    setIsCopy(false)
+                }, 1000)
+            } catch (err) {
+                console.error("复制失败:", err);
+            } finally {
+                document.body.removeChild(textArea);
+            }
+        }
+    };
+
+    const closePreview = async () => {
+        if (document.fullscreenElement) {
+            try {
+                await document.exitFullscreen();
+            } catch (error) {
+                console.error('退出全屏失败:', error);
+            }
+        }
+        setIsPreviewOpen(false);
+        setIsPreviewFullscreen(false);
+    };
+
+    const togglePreviewFullscreen = async () => {
+        if (!previewDialogRef.current) {
+            return;
+        }
+        try {
+            if (document.fullscreenElement) {
+                await document.exitFullscreen();
+            } else {
+                await previewDialogRef.current.requestFullscreen();
+            }
+        } catch (error) {
+            console.error('切换全屏失败:', error);
+        }
+    };
+
+    return (
+        <pre>
+            <div className='code-copy'>
+                <span>{language}</span>
+                <div className='codeActions'>
+                    {enableHtmlPreview && (
+                        <span
+                            className='copy-text'
+                            onClick={() => setIsPreviewOpen(true)}
+                        >
+                            {t('share.previewAlt')}
+                        </span>
+                    )}
+                    <span className='copy-text' onClick={handleCopy}>{isCopy ? t('message.copySuccess') : t('message.copyCode')}</span>
+                </div>
+            </div>
+            <div className='codeWrap'>
+                <code
+                    className={className}
+                    dangerouslySetInnerHTML={{ __html: codeHTML }}
+                >
+                </code>
+            </div>
+            {isPreviewOpen && enableHtmlPreview && typeof document !== 'undefined'
+                ? createPortal(
+                    <div
+                        className='htmlPreviewOverlay'
+                        onClick={(event) => {
+                            if (event.target === event.currentTarget) {
+                                closePreview();
+                            }
+                        }}
+                    >
+                        <div
+                            ref={previewDialogRef}
+                            className='htmlPreviewDialog'
+                            onClick={(event) => event.stopPropagation()}
+                        >
+                            <div className='htmlPreviewHeader'>
+                                <span>{t('preview.html')}</span>
+                                <div className='htmlPreviewActions'>
+                                    <button
+                                        type="button"
+                                        className='htmlPreviewBtn'
+                                        onClick={togglePreviewFullscreen}
+                                    >
+                                        {isPreviewFullscreen ? t('preview.exitFullscreen') : t('preview.fullscreen')}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className='htmlPreviewBtn'
+                                        onClick={closePreview}
+                                    >
+                                        {t('share.close')}
+                                    </button>
+                                </div>
+                            </div>
+                            <div className='htmlPreviewBody'>
+                                <iframe
+                                    className='htmlPreviewFrame'
+                                    title={t('preview.html')}
+                                    srcDoc={previewDoc}
+                                    sandbox="allow-scripts allow-forms"
+                                />
+                            </div>
+                        </div>
+                    </div>,
+                    document.body
+                )
+                : null}
+        </pre>
+    );
+};
+
+const CodeBlock = React.memo(codeBlockRenderer);
+
+// react-markdown v10 no longer passes an `inline` flag, so every code node used
+// to fall through to the block renderer: inline code rendered as a block, and an
+// inline span like `<label>` was treated as an HTML code block with a preview.
+// Block code is the one wrapped in `pre`, so `pre` decides instead.
+const inlineCodeRenderer = ({ className, children }: CodeBlockProps) => (
+    <code className={className}>{children}</code>
+);
+
+const preRenderer = ({ children }: { children?: React.ReactNode }) => {
+    const element = React.Children.toArray(children).find((item) => React.isValidElement(item));
+    const props = React.isValidElement(element) ? element.props as CodeBlockProps : {};
+    const text = Array.isArray(props.children) ? props.children.join('') : String(props.children ?? '');
+    return <CodeBlock className={props.className} codeText={text} />;
+};
+
+interface MarkdownContentProps {
+  msg: string;
+}
+
+const MarkdownContent = React.memo(({ msg }: MarkdownContentProps) => {
+   
+    return (
+        <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+                pre: preRenderer,
+                code: inlineCodeRenderer,
+                a: ({ href, children, title }) => <a href={resolveFileDownloadUrl(href)} title={title}>{children}</a>,
+            }}>
+            {msg}
+        </ReactMarkdown>
+    )
+})
+
+export default MarkdownContent
