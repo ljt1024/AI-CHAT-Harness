@@ -1,4 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@500;600;700;800&family=Noto+Sans+SC:wght@400;500;700;800&display=swap');
+/* No @import of remote fonts here: a stylesheet import that cannot complete
+   blocks script execution (deferred module scripts wait for pending sheets), so
+   on networks that cannot reach fonts.googleapis.com the whole app renders
+   blank. The font stacks in :root already fall back to PingFang SC / Noto Sans
+   SC, so dropping the remote sheet costs no readability. */
 
 body {
   margin: 0;

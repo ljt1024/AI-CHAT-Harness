@@ -25,7 +25,7 @@ from agentforge.loop import Runtime
 from agentforge.logging_config import configure, request_id
 from agentforge.redact import describe, mask_url, status_code
 from agentforge.middleware import MiddlewareStack
-from agentforge.models import AgentDefinition, ModelRef, new_id
+from agentforge.models import PYTHON_SANDBOX_IMAGES, AgentDefinition, ModelRef, new_id
 from agentforge.permissions import ApprovalManager
 from agentforge.policy import InterventionPolicy
 from agentforge.prompts import with_response_language
@@ -527,7 +527,7 @@ def create_app(settings=None, store=None, gateway=None):
             "unless a browser tool was actually used."
         if agent.skills and agent.sandbox_policy is None:
             raise HTTPException(422, "Skills require the Docker sandbox. Start a sandbox conversation.")
-        if agent.sandbox_policy and agent.sandbox_policy.image != "python:3.12-slim":
+        if agent.sandbox_policy and agent.sandbox_policy.image not in PYTHON_SANDBOX_IMAGES:
             raise HTTPException(422, "Integrated file tools require the Python sandbox image.")
         try:
             instructions = await skill_manager.instructions(agent.skills)

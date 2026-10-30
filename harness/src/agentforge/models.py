@@ -20,9 +20,32 @@ class StopConditions(BaseModel):
     idle_limit: int = Field(default=3, ge=1, le=10)
 
 
+DEFAULT_SANDBOX_IMAGE = "python:3.12-slim"
+
+# Images that can run the integrated file tools: anything with a CPython
+# interpreter. `node:22-slim` has no python, so sessions pinned to it may not
+# use write_file/read_file and friends.
+PYTHON_SANDBOX_IMAGES = ("python:3.12-slim", "agentforge/python-docs:3.12")
+
+
+def default_sandbox_image() -> str:
+    """The image a session starts in when it does not name one.
+
+    Resolved late, because the settings module imports this one. A machine that
+    built the document image can say so once instead of every agent repeating it.
+    """
+    from agentforge.config import Settings
+
+    return Settings().sandbox_image
+
+
 class SandboxPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    image: Literal["python:3.12-slim", "node:22-slim"] = "python:3.12-slim"
+    # `agentforge/python-docs:3.12` is built from harness/docker/sandbox-docs: the
+    # same interpreter carrying the document libraries, because a sandbox has no
+    # network to install them into itself.
+    image: Literal["python:3.12-slim", "node:22-slim", "agentforge/python-docs:3.12"] = Field(
+        default_factory=default_sandbox_image)
     timeout: int = Field(default=30, ge=1, le=30)
 
 

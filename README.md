@@ -73,6 +73,16 @@ cd harness && uv run uvicorn agentforge.server:app --host 127.0.0.1 --port 8016
 AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 ```
 
+### 6. 生产部署（参考拓扑）
+
+以腾讯云轻量 Ubuntu 24.04（2C2G）为例：
+
+- **MongoDB**：`docker run mongo:7`，只绑 `127.0.0.1:27017`，`--wiredTigerCacheSizeGB 0.25` 限内存。应用账号建在 `agentforge` 库里，连接串的认证库是 `authSource=agentforge` 而不是 `admin`——这是最常见的连不上原因。
+- **后端**：专用系统用户跑 venv + uvicorn（`127.0.0.1:8100`，单 worker），systemd 单元 `agentforge.service`（`Restart=always`），日志 `/var/log/agentforge/`。用户需在 `docker` 组里才能管理沙箱容器。
+- **前端**：`npm run build` 产物放 `/var/www/agentforge`，nginx 同站监听 `80` / `8099`；`/api`、`/ws` 反代到后端，SSE 必须 `proxy_buffering off`，`/health` 单独代理。
+- **沙箱镜像**：`docker build -t agentforge/python-docs:3.12 harness/docker/sandbox-docs`（国内构建给 pip 换内网源），`.env` 里 `SANDBOX_IMAGE=agentforge/python-docs:3.12`、`SANDBOX_WARM_SIZE=0`（小内存机器不预热）。
+- **前端不引用任何外网资源**：`@import` Google Fonts 已移除——样式表在不可达网络下会永远 pending，而 deferred module 脚本要等样式表加载完才执行，结果就是整站白屏且无任何报错。字体走 `:root` 里的系统栈（PingFang SC / Noto Sans SC）。
+
 ## 核心能力
 
 ### 智能体循环：思考 → 行动 → 观察
@@ -103,6 +113,7 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 - 判断"遗留"靠归属而非状态：容器带 `agentforge.instance` 标签，进程启动时在 `workspaces/instances/` 写一份带 pid 的声明。启动清理只回收**属主进程已不在**的容器和无人可重建的目录，同机另一个还活着的后端、它正在用的容器与目录都不动。正常关闭会撤掉自己的声明。
 - 沙箱失败**不会**回退到宿主执行。离线命令与已安装技能脚本默认自动执行；宿主命令、技能安装、以及未声明只读的 MCP 调用仍需人工确认（见 [ADR-0013](docs/adr/0013-autonomous-docker-commands.md)）。
 - `POST /api/sandbox/exec` 把沙箱开放给宿主侧工具：一次性容器里放入文件并执行命令，不经模型回合，复用同一套隔离参数。
+- 文档生成镜像 `agentforge/python-docs:3.12`（`harness/docker/sandbox-docs/`）：同一个解释器预装 reportlab / openpyxl / python-pptx / python-docx——沙箱没有网络装不了依赖，PDF / PPT / Excel 这类交付物只能镜像自带。构建后用 `SANDBOX_IMAGE` 把它设为默认镜像；集成文件工具（`write_file` 等）在所有含 CPython 的镜像上可用（`PYTHON_SANDBOX_IMAGES`），`node:22-slim` 例外。
 
 #### 在沙箱里跑宿主侧脚本
 
