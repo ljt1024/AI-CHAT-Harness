@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import Popover from '../Popover'
 import ChatRecordDialog from './components/ChatRecordDialog'
 import EditTitDialog from './components/EditTitDialog'
@@ -9,7 +10,7 @@ import { useLanguage } from '@/app/providers/LanguageContext'
 import { getSelectId, storageSelectId, type CovIdListItem } from '@/shared/utils/localMessages'
 import './index.css'
 
-function SidebarIcon({ name }: { name: 'search' | 'panel' | 'new' | 'more' | 'records' | 'chat' }) {
+function SidebarIcon({ name }: { name: 'search' | 'panel' | 'new' | 'more' | 'records' | 'chat' | 'agents' }) {
   const paths: Record<typeof name, ReactNode> = {
     search: <><circle cx="10.5" cy="10.5" r="7.5" /><path d="m16 16 5 5" /></>,
     panel: <><rect x="3" y="3" width="18" height="18" rx="4" /><path d="M9 3v18" /></>,
@@ -17,6 +18,7 @@ function SidebarIcon({ name }: { name: 'search' | 'panel' | 'new' | 'more' | 're
     more: <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>,
     records: <><circle cx="5" cy="6" r="1.5" /><circle cx="5" cy="12" r="1.5" /><circle cx="5" cy="18" r="1.5" /><path d="M11 6h9m-9 6h9m-9 6h9" /></>,
     chat: <><path d="M20 11a8 8 0 0 1-8 8H4l-2 3V11a9 9 0 0 1 18 0Z" /><path d="m7 10 3 3 6-6" /></>,
+    agents: <><rect x="4" y="7" width="16" height="12" rx="4" /><path d="M12 3v4" /><circle cx="9" cy="13" r="1" /><circle cx="15" cy="13" r="1" /></>,
   }
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
 }
@@ -113,6 +115,7 @@ export default function Sidebar({ isLoading, account }: {
           <button ref={collapseRef} type="button" className="sidebar-icon-button" aria-label={t('sidebar.collapse')} onClick={() => setOpen(false)}><SidebarIcon name="panel" /></button>
         </header>
         <button type="button" className="newCov" disabled={isLoading} onClick={() => select()}><SidebarIcon name="new" /><span>{t('sidebar.newChat')}</span></button>
+        <Link className="sidebar-agents" to="/agents"><SidebarIcon name="agents" /><span>{t('agents.title')}</span></Link>
         {searching && <div className="sidebar-search"><SidebarIcon name="search" /><input ref={searchRef} type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t('sidebar.searchPlaceholder')} aria-label={t('sidebar.searchPlaceholder')} /></div>}
         <nav className="covList" aria-label={t('sidebar.chatHistory')}>
           <div className="sidebar-history-tools"><button type="button" className="sidebar-icon-button" disabled={isLoading} aria-label={t('sidebar.manage')} title={t('sidebar.manage')} onClick={() => setRecords(true)}><SidebarIcon name="records" /></button></div>
@@ -151,6 +154,7 @@ export default function Sidebar({ isLoading, account }: {
       </> : <div className="sidebar-rail">
         <button ref={expandRef} type="button" className="sidebar-icon-button" aria-label={t('sidebar.expand')} onClick={() => setOpen(true)}><SidebarIcon name="panel" /></button>
         {!mobile && <button type="button" className="sidebar-icon-button" disabled={isLoading} aria-label={t('sidebar.newChat')} onClick={() => select()}><SidebarIcon name="new" /></button>}
+        <Link className="sidebar-icon-button" to="/agents" aria-label={t('agents.title')} title={t('agents.title')}><SidebarIcon name="agents" /></Link>
       </div>}
     </aside>
     {editing && <EditTitDialog isConfirmDialogOpen setIsConfirmDialogOpen={value => { if (!value) setEditing(null) }} covItem={editing} />}

@@ -1,7 +1,7 @@
 import { t, languageHeaders } from '@/app/i18n';
-import type { AgentDefinition, AgentEvent, AgentResult } from './types';
+import type { AgentDefinition, AgentEvent, AgentResult, ToolInfo } from './types';
 import { getFileDownloadUrl } from '@/shared/utils/fileDownloads';
-import { apiUrl, consumeSSE, isGuestLimit, notifyGuestLimit, postJSON } from '@/infrastructure/api';
+import { apiUrl, consumeSSE, isGuestLimit, notifyGuestLimit, postJSON, requestJSON } from '@/infrastructure/api';
 
 async function readError(response: Response): Promise<Error> {
   const payload = await response.json().catch(() => ({}));
@@ -20,6 +20,46 @@ export async function fetchAgents(signal?: AbortSignal): Promise<AgentDefinition
   if (!response.ok) throw await readError(response);
   return (await response.json()).data;
 }
+
+/** The tools a definition may select, straight from the runtime's registry. */
+export async function fetchToolCatalog(signal?: AbortSignal): Promise<ToolInfo[]> {
+  const response = await fetch(apiUrl('/tools'), { signal, headers: languageHeaders() });
+  if (!response.ok) throw await readError(response);
+  return (await response.json()).data;
+}
+
+/**
+ * What the wizard hands the server. Snake_case because it mirrors the stored
+ * definition: a translated shape here would need a second mapping to stay true.
+ */
+export interface AgentPayload {
+  id?: string;
+  name: string;
+  description: string;
+  system_prompt: string;
+  model: { provider: string; model_id: string };
+  tools: string[];
+  skills: string[];
+  mcp_servers: string[];
+  sandbox_policy: { image: string; timeout: number } | null;
+  permissions: Record<string, string>;
+  stop_conditions: { max_turns: number; budget: number; idle_limit: number };
+}
+
+export async function saveAgent(payload: AgentPayload, signal?: AbortSignal): Promise<AgentDefinition> {
+  const response = payload.id
+    ? await requestJSON('PUT', `/agents/${encodeURIComponent(payload.id)}`, payload, languageHeaders(), signal)
+    : await requestJSON('POST', '/agents', payload, languageHeaders(), signal);
+  if (!response.ok) throw await readError(response);
+  return (await response.json()).data;
+}
+
+export async function deleteAgent(id: string, signal?: AbortSignal): Promise<void> {
+  const response = await requestJSON('DELETE', `/agents/${encodeURIComponent(id)}`, undefined,
+    languageHeaders(), signal);
+  if (!response.ok) throw await readError(response);
+}
+
 
 export async function downloadAgentArtifact(fileId: string, signal?: AbortSignal): Promise<Blob> {
   if (!/^[a-f0-9-]{36}$/i.test(fileId)) throw new Error(t('error.invalidFile'));

@@ -1,4 +1,8 @@
 export const MODEL_STORAGE_KEY = 'selectedModelId'
+// Default agent for the next conversation; each started conversation also
+// remembers its own under `chat.agent.<sessionId>`, because a stored definition
+// decides the tools, model and limits of that session and cannot be swapped later.
+export const AGENT_STORAGE_KEY = 'chat.agentId'
 // Must match the model id the runtime serves (/api/models), otherwise the cached
 // selection and the offline fallback both point at a model the backend rejects.
 export const DEFAULT_MODEL_ID = 'deepseek-chat'

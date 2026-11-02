@@ -11,7 +11,7 @@ import { useChat, useChatDispatch } from '@/app/providers/ChatContext';
 import { useAuth } from '@/app/providers/AuthContext';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import { newChat, storageMessages, ensureAgentTurnId, removeLastAssistantMessage, Message, getSelectId, getMessageByCovId } from '@/shared/utils/localMessages'
-import { MODEL_STORAGE_KEY, SHOW_SANDBOX_AND_SKILLS_UI } from './constants';
+import { MODEL_STORAGE_KEY, AGENT_STORAGE_KEY, SHOW_SANDBOX_AND_SKILLS_UI } from './constants';
 import { SSEData } from './types';
 import { useChatModels } from './hooks/useChatModels';
 import { useFileUpload } from './hooks/useFileUpload';
@@ -22,6 +22,8 @@ import type { MessageApproval } from '@/shared/utils/localMessages';
 import { CapabilitiesPanel, type CapabilitySelection } from '@/features/agents/components/CapabilitiesPanel';
 import type { AgentArtifact } from '@/features/agents/types';
 import { ArtifactPreviewPanel } from '@/features/agents/components/ArtifactPreviewPanel';
+import { AgentPicker } from '@/features/agents/components/AgentPicker';
+import { useAgents } from '@/features/agents/hooks/useAgents';
 import {
   buildContextMessages,
   cloneMessage,
@@ -52,6 +54,8 @@ const ChatAI: React.FC = () => {
   const [pendingSkillSession, setPendingSkillSession] = useState<CapabilitySelection | null>(null);
   const [approvals, setApprovals] = useState<(Approval & { sessionId: string })[]>([]);
   const [isAgentMode, setIsAgentMode] = useState(() => localStorage.getItem('chat.agentMode') === 'true');
+  // Which stored definition runs this conversation; empty means the built-in one.
+  const [selectedAgentId, setSelectedAgentId] = useState(() => localStorage.getItem(AGENT_STORAGE_KEY) || '');
   const [liveFiles, setLiveFiles] = useState<{ sessionId: string; files: AgentArtifact[] }>({ sessionId: '', files: [] });
   const [previewSelection, setPreviewSelection] = useState<{ sessionId: string; artifact: AgentArtifact } | null>(null);
   const setPreviewArtifact = useCallback((artifact: AgentArtifact) => {
@@ -154,6 +158,39 @@ const ChatAI: React.FC = () => {
     defaultDescription: t('chat.defaultDescription')
   })
   const isImageModel = selectedModel?.supportsImageGeneration === true;
+  const { agents: availableAgents } = useAgents();
+  // The bubble is signed by whatever actually answered: a stored agent, or the
+  // model running the built-in one.
+  const botName = availableAgents.find(agent => agent.id === selectedAgentId)?.name || selectedModelName;
+  // "Use" on the agents page opens this page with ?agent=<id>: that means start a
+  // conversation with it, not attach it to whatever conversation happened to be
+  // open. The parameter is consumed once so a reload does not clear the view again.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('agent')) return;
+    const requested = params.get('agent') || '';
+    const id = requested === 'default' ? '' : requested;
+    setSelectedAgentId(id);
+    localStorage.setItem(AGENT_STORAGE_KEY, id);
+    localStorage.setItem('isNewCov', 'true');
+    dispatch({ type: 'clearMessages' });
+    window.history.replaceState({}, '', window.location.pathname);
+  }, [dispatch]);
+  // A stored definition fixes the session's tools, model and limits, so the
+  // server refuses to change it mid-conversation; reopening a conversation must
+  // therefore show the agent it was actually started with.
+  useEffect(() => {
+    if (isNewConversation || !activeSessionId) return;
+    setSelectedAgentId(localStorage.getItem(`chat.agent.${activeSessionId}`) || '');
+  }, [activeSessionId, isNewConversation]);
+  // Choosing an agent means running it: the plain completion path would ignore
+  // the definition entirely. Covers every way an agent can become selected (the
+  // picker, ?agent= from the agents page, a restored conversation).
+  useEffect(() => {
+    if (!selectedAgentId || isAgentMode) return;
+    setIsAgentMode(true);
+    localStorage.setItem('chat.agentMode', 'true');
+  }, [selectedAgentId, isAgentMode]);
   const selectCapabilities = (next: CapabilitySelection) => {
     if (next.skills.length && !sandbox && messages.length) {
       setPendingSkillSession(next);
@@ -492,6 +529,7 @@ const ChatAI: React.FC = () => {
     if (!sessionId) return
     localStorage.setItem(`chat.sandbox.${sessionId}`, String(sandbox));
     localStorage.setItem(`chat.capabilities.${sessionId}`, JSON.stringify(capabilities));
+    localStorage.setItem(`chat.agent.${sessionId}`, selectedAgentId);
     const turnId = ensureAgentTurnId(userMessage)
     userMessage = { ...userMessage, agentTurnId: turnId }
     const model = { id: selectedModelId, name: selectedModelName }
@@ -512,7 +550,11 @@ const ChatAI: React.FC = () => {
       scheduleStreamRender()
     }
     try {
-      await streamAgents({ input: userMessage.content, model: selectedModelId, sessionId, turnId, sandbox, ...capabilities, fileIds: userMessage.attachments?.map(file => file.fileId).filter((id): id is string => Boolean(id)) }, (event) => {
+      await streamAgents({ input: userMessage.content, model: selectedModelId, sessionId, turnId, sandbox,
+        // With a stored agent the server takes model, tools and limits from that
+        // definition; the request fields only matter for the built-in one.
+        agentIds: selectedAgentId ? [selectedAgentId] : undefined,
+        ...capabilities, fileIds: userMessage.attachments?.map(file => file.fileId).filter((id): id is string => Boolean(id)) }, (event) => {
         if (event.type === 'skill_installed') setSkillCatalogVersion(version => version + 1);
         if (event.type === 'skill_deleted') {
           const removed = event.skill_id;
@@ -700,6 +742,18 @@ const ChatAI: React.FC = () => {
     controllerRef.current?.abort();
   }
 
+  const selectAgent = (id: string) => {
+    if (id === selectedAgentId) return
+    setSelectedAgentId(id)
+    localStorage.setItem(AGENT_STORAGE_KEY, id)
+    // A definition carries its own prompt and tools, so the plain completion path
+    // would ignore it entirely: choosing an agent means running that agent.
+    if (id && !isAgentMode) {
+      setIsAgentMode(true)
+      localStorage.setItem('chat.agentMode', 'true')
+    }
+  }
+
   const onSelectModel = (modelId: string) => {
     if (isLoading || isModelsLoading || modelId === selectedModelId) return
     const targetModel = models.find((model) => model.id === modelId)
@@ -737,6 +791,9 @@ const ChatAI: React.FC = () => {
             selectedModelId={selectedModel?.id || selectedModelId}
             isModelLoading={isModelsLoading || isLoading}
             onSelectModel={onSelectModel}
+            agentSelector={<AgentPicker agents={availableAgents} value={selectedAgentId}
+              onChange={selectAgent} disabled={isLoading} locked={messages.length > 0} />}
+            modelLocked={Boolean(selectedAgentId)}
           />
           {SHOW_SANDBOX_AND_SKILLS_UI && isAgentMode && <label className="sandbox-control"><input type="checkbox" checked={sandbox} disabled={isLoading || messages.length > 0 || capabilities.skills.length > 0} onChange={event => setSandbox(event.target.checked)} />{t('approval.sandbox')}</label>}
           {SHOW_SANDBOX_AND_SKILLS_UI && isAgentMode && <CapabilitiesPanel value={capabilities} onChange={selectCapabilities} disabled={isLoading} sandbox={sandbox} onPrepareSandbox={prepareSkillSession} loadedSkills={loadedSkills} catalogVersion={skillCatalogVersion} />}
@@ -782,7 +839,7 @@ const ChatAI: React.FC = () => {
                       <MessageItem
                         msg={msg}
                         key={index}
-                        botName={selectedModelName}
+                        botName={botName}
                         setIsShowShare={setIsShowShare}
                         setShareTarget={setShareTargetElement}
                         canRetry={msg.isBot && !msg.isLoading && index === messages.length - 1 && !isLoading}

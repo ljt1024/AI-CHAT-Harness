@@ -23,11 +23,16 @@ interface ChatHeaderOperateProps {
   selectedModelId: string;
   isModelLoading?: boolean;
   onSelectModel: (modelId: string) => void;
+  /** Rendered next to the model name; the chat page supplies the agent picker. */
+  agentSelector?: React.ReactNode;
+  /** A stored agent carries its own model, so switching here would do nothing. */
+  modelLocked?: boolean;
 }
 
 const ChatHeaderOperate: React.FC<ChatHeaderOperateProps> = (props) => {
     const { t } = useLanguage()
-    const { isShowShare, onCancelShare, models, selectedModelId, isModelLoading = false, onSelectModel } = props
+    const { isShowShare, onCancelShare, models, selectedModelId, isModelLoading = false, onSelectModel,
+      agentSelector, modelLocked = false } = props
     const [category, setCategory] = useState('all');
     const [configuring, setConfiguring] = useState(false);    const filtered = models.filter(model => category === 'all' || (category === 'custom' ? model.custom : category === 'image' ? model.supportsImageGeneration : category === 'vision' ? supportsImageUnderstanding(model) : !model.supportsImageGeneration && !supportsImageUnderstanding(model)));
     const selectedModel = models.find((model) => model.id === selectedModelId)
@@ -80,6 +85,7 @@ const ChatHeaderOperate: React.FC<ChatHeaderOperateProps> = (props) => {
     return (
         <div className="chatHeaderOperate">
             <div className="headerPrimary">
+                {agentSelector}
                 <div className="modelName" title={selectedModelName}>{selectedModelName}</div>
                 <Popover
                     title=""
@@ -88,8 +94,10 @@ const ChatHeaderOperate: React.FC<ChatHeaderOperateProps> = (props) => {
                     trigger="click"
                     className="modelPopoverWrap"
                 >
-                    <button type="button" className="modelSelectButton" disabled={isModelLoading || models.length === 0}>
-                        <span className="modelSelectText">{t('header.switchModel')}</span>
+                    <button type="button" className="modelSelectButton"
+                        disabled={isModelLoading || models.length === 0 || modelLocked}
+                        title={modelLocked ? t('header.modelLocked') : undefined}>
+                        <span className="modelSelectText">{modelLocked ? t('header.modelLocked') : t('header.switchModel')}</span>
                         <ArrowDownIcon className="modelSelectArrow" />
                     </button>
                 </Popover>

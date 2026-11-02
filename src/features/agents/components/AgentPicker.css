@@ -1,0 +1,180 @@
+.agentPickerWrap {
+  display: inline-flex;
+}
+
+.agentPicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 210px;
+  padding: 8px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--surface-elevated) 78%, transparent);
+  color: var(--text-color);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.agentPicker:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--secondary-color) 20%, var(--border-strong));
+  background: var(--surface-hover);
+  transform: translateY(-1px);
+  box-shadow: var(--soft-shadow);
+}
+
+.agentPicker:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.agentPickerLabel {
+  color: var(--text-muted-color);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.agentPickerValue {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.agentPickerArrow {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--icon-muted-color);
+}
+
+.agentPicker--locked {
+  cursor: default;
+  opacity: 0.75;
+}
+
+.agentPickerPanel {
+  width: 320px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agentPickerTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted-color);
+  padding: 0 4px;
+}
+
+.agentPickerList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.agentPickerItem {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18px;
+  gap: 2px 8px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-color);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agentPickerItem:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-color);
+}
+
+.agentPickerItem.active {
+  background: var(--primary-color);
+  border-color: color-mix(in srgb, var(--secondary-color) 32%, transparent);
+}
+
+.agentPickerItem:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.agentPickerName {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agentPickerName em {
+  font-style: normal;
+  font-weight: 500;
+  font-size: 10px;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted-color);
+}
+
+.agentPickerDesc {
+  grid-column: 1;
+  color: var(--text-muted-color);
+  font-size: 11px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.agentPickerCheck {
+  grid-column: 2;
+  grid-row: 1;
+  color: var(--secondary-color);
+  font-size: 13px;
+  text-align: right;
+}
+
+.agentPickerEmpty {
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--text-muted-color);
+  font-size: 12px;
+}
+
+.agentPickerManage {
+  margin-top: 2px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--text-muted-color);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.agentPickerManage:hover {
+  color: var(--secondary-color);
+  border-color: var(--secondary-color);
+}
+
+@media (max-width: 640px) {
+  .agentPickerPanel { width: min(320px, 86vw); }
+  .agentPickerLabel { display: none; }
+}

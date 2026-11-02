@@ -1,5 +1,30 @@
 export type AgentId = string;
 
+export type ToolPermission = 'auto' | 'rule' | 'confirm';
+
+export interface ToolInfo {
+  name: string;
+  description: string;
+  permission: ToolPermission;
+  source: string;
+}
+
+export interface AgentStopConditions {
+  max_turns: number;
+  budget: number;
+  idle_limit: number;
+}
+
+export interface AgentSandboxPolicy {
+  image: string;
+  timeout: number;
+}
+
+/**
+ * A stored row, as `/api/agents` returns it: the snake_case fields the runtime
+ * reads plus the camelCase twins the list adds for the interface. `owner_id`
+ * present and empty means the row is shared read-only (the built-in agent).
+ */
 export interface AgentDefinition {
   id: AgentId;
   name: string;
@@ -7,6 +32,13 @@ export interface AgentDefinition {
   modelId: string;
   systemPrompt?: string;
   tools?: string[];
+  skills?: string[];
+  mcp_servers?: string[];
+  sandbox_policy?: AgentSandboxPolicy | null;
+  permissions?: Record<string, ToolPermission>;
+  stop_conditions?: AgentStopConditions;
+  model?: { provider: string; model_id: string; params?: Record<string, unknown> };
+  owner_id?: string;
 }
 
 export interface AgentTask {

@@ -88,3 +88,15 @@ export function postJSON(path: string, body: unknown, headers: HeadersInit, sign
     body: JSON.stringify(body),
   }).then(watchAuth);
 }
+
+/** POST/PUT/DELETE for the CRUD endpoints, which share one shape of answer. */
+export function requestJSON(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown,
+  headers: HeadersInit = {}, signal?: AbortSignal) {
+  return fetch(apiUrl(path), {
+    method, signal,
+    headers: body === undefined ? headers : { ...headers, 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }).then(watchAuth);
+}
+
