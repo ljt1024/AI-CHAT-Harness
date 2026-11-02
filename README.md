@@ -2,7 +2,7 @@
 
 在 **AI-CHAT 2.1.1** 前端基础上演进的智能体平台：保留 **React + Vite** 前端，用 **Python FastAPI Harness** 替换了原来的 Node/Express 后端，并加入 Docker 沙箱、MongoDB 持久化、技能与 MCP 扩展、人工审批和产物交付。
 
-> **当前状态**：T0–T12 已完成并通过实机验收（真实 Docker、真实 MongoDB、真实模型浏览器验证）；前端智能体体验已重构为连贯的流式展示——思考 / 行动 / 观察活动条、分块稳定的 Markdown、输入框上方的人工审批卡、带防遮挡策略的产物预览。
+> **当前状态**：T0–T13、T15 与 T15.A1/A2 已完成并通过实机验收（真实 Docker、真实 MongoDB、真实模型浏览器验证）；T14 前端只差创建向导、独立轨迹页与 DevTools；T15.A3 已完成沙箱租约归属与每账号配额，剩余按用户目录、MCP 凭证加密与迁移演练。沙箱隔离已从「会话」推进到「会话 + 账号」。前端智能体体验是连贯的流式展示——思考 / 行动 / 观察活动条、分块稳定的 Markdown、输入框上方的人工审批卡、带防遮挡策略的产物预览。
 > 原 `end/` 后端仅作参考保留，**其配置与接口不适用于 Harness**。验收记录见 [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md)，待办见 [NOTES.md](NOTES.md)。
 
 ## 架构
@@ -540,6 +540,8 @@ python scripts/verify_i18n.py --url http://localhost:5174/ai
 
 ### 部署与数据保留
 
+> 这一节描述的是已冻结的旧 `end/`（Express + LangGraph）后端，仅作追溯；本项目真正在跑的是 Python Harness，部署方式见上文「生产部署」。
+
 1. 在根目录创建 `.env.production`，将 `VITE_CHAT_BASE_URL` 设置为用户浏览器可访问的生产聊天接口完整地址，再执行 `npm run build`。前端变量在构建时固化，不能只修改服务器环境而不重新构建。
 2. 将 `dist/` 部署到静态服务器，为 `/ai` 等前端路由配置回退到 `index.html`。
 3. 部署 `end/`，保留字体资源和依赖锁文件；服务器安装 Node.js 22.13+，执行 `npm ci --omit=dev --prefix end`，配置 `end/.env` 后运行 `npm start --prefix end`。
@@ -548,7 +550,7 @@ python scripts/verify_i18n.py --url http://localhost:5174/ai
 
 升级时保留 `end/.env` 和整个 `end/local_storage/`。其中包含会话 checkpoint、生成文件与上传文件、文件索引、自定义模型配置；删除会导致记忆或历史文件不可用。SQLite 备份应使用一致性快照或停服务备份，避免只复制运行中的主数据库而遗漏 WAL 数据。
 
-当前没有完整的用户登录、多租户数据隔离体系。对外提供服务时，应在部署层配置访问控制；模型管理令牌只保护模型配置操作。
+旧后端自身没有账号体系（多用户隔离由新的 Harness 提供：见「账号与登录」与「边界与限制」）。若仍要对外运行这套旧后端，只能在部署层加访问控制；模型管理令牌只保护模型配置操作。
 
 ### 常见问题
 
