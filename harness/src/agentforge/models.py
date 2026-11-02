@@ -59,6 +59,9 @@ class SandboxPolicy(BaseModel):
 class AgentDefinition(BaseModel):
     id: str = Field(default_factory=new_id)
     name: str = Field(min_length=1, max_length=100)
+    # Shown on the agent card in the picker. Optional because rows written before
+    # the wizard existed have no such field and must keep loading unchanged.
+    description: str = Field(default="", max_length=300)
     system_prompt: str = "Complete the task. Use tools only when needed."
     model: ModelRef = Field(default_factory=ModelRef)
     tools: list[str] = Field(default_factory=list)

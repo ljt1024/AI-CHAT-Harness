@@ -220,7 +220,11 @@ async def run_servers(store, pinned, auto_attach: bool = True):
     if pinned or not auto_attach:
         return pinned, set(pinned)
     servers = await store.list("mcp_servers")
-    return [server["id"] for server in servers if server.get("enabled", True)], set()
+    # Rows are per owner, so a legacy shared row and the current one can share an
+    # id. Attaching both would register the same tools twice and every save that
+    # validates an MCP-backed agent would fail with "Duplicate tool".
+    ids = dict.fromkeys(server["id"] for server in servers if server.get("enabled", True))
+    return list(ids), set()
 
 
 async def server_tools(server, discover_timeout: float | None = None,

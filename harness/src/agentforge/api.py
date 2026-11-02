@@ -253,6 +253,7 @@ def create_app(settings=None, store=None, gateway=None):
         return bus, True
 
     default = AgentDefinition(id="default", name="AgentForge",
+        description="通用助手：可以读写工作区文件、运行受限命令、按需加载技能。",
         tools=["read_file", "write_file", "grep", "glob", "run_command", "ask_user"])
 
     @asynccontextmanager
@@ -266,14 +267,22 @@ def create_app(settings=None, store=None, gateway=None):
             await auth.prune_guests(settings.guest_retention_hours)
             owner = await auth.bootstrap(settings.admin_user,
                                          settings.admin_password.get_secret_value())
-            if owner is None:
+            # An installation can hold accounts while the environment stopped
+            # naming one (a developer's machine, an operator who rotated the
+            # file). Legacy rows still need an owner, or they stay invisible to
+            # everyone -- the same failure as the built-in agent below.
+            operator = owner["id"] if owner else await auth.first_owner()
+            if operator is None:
                 logger.warning("No account exists yet. Set ADMIN_USER and ADMIN_PASSWORD, then "
                                "restart: every /api request is refused until then.")
             else:
+                if owner is None:
+                    logger.warning("ADMIN_USER is not configured; binding legacy resources to "
+                                   "the first account (%s).", operator)
                 # Resources written before accounts existed belong to the account
                 # the operator designated, not to whoever logs in first. The
                 # built-in agent is excluded there on purpose.
-                await auth.adopt_ownerless(owner["id"])
+                await auth.adopt_ownerless(operator)
             # The built-in agent is shared: its empty owner means every account,
             # visitor included, may read and run it, and nobody may replace it.
             # So exactly one row carries that id. An earlier migration bound it
@@ -286,9 +295,30 @@ def create_app(settings=None, store=None, gateway=None):
                 logger.warning("Dropped %d private copy of the built-in agent; it is "
                                "shared read-only.", orphaned.deleted_count)
             await store.put("agents", default.model_dump(), owner="")
+            # MCP servers belong to an account, so a row with an empty owner is a
+            # leftover from a boot that had no account yet -- the config file is
+            # the only thing that plants them. Left alone it reads as shared, and
+            # the next config refresh inserts an owned twin with the same id; the
+            # list then carries the server twice, discovery runs twice, and every
+            # save that validates an MCP-backed agent dies on "Duplicate tool".
+            # Bind the only copy, drop the stale twin.
+            if operator:
+                shared = await store.db.mcp_servers.find({"owner_id": ""}).to_list(length=10000)
+                for row in shared:
+                    owned = await store.db.mcp_servers.count_documents(
+                        {"id": row["id"], "owner_id": operator})
+                    if owned:
+                        await store.db.mcp_servers.delete_one({"_id": row["_id"]})
+                    else:
+                        await store.db.mcp_servers.update_one(
+                            {"_id": row["_id"]}, {"$set": {"owner_id": operator}})
+                if shared:
+                    logger.info("Settled %d shared MCP rows onto %s", len(shared), operator)
             # The startup MCP file is planted by the operator, so its rows belong
-            # to the initial account rather than to nobody in particular.
-            planted = current_user.set(owner["id"] if owner else None) if owner else None
+            # to that account rather than to nobody in particular. Seeding under
+            # the operator (not the configured `owner`, which can be absent while
+            # accounts exist) is what stops the rows coming back ownerless.
+            planted = current_user.set(operator) if operator else None
             try:
                 await load_mcp_config(settings.mcp_config)
             finally:
@@ -562,6 +592,23 @@ def create_app(settings=None, store=None, gateway=None):
         return {"code": 200, "data": [{**a, "modelId": a["model"]["model_id"],
             "systemPrompt": a["system_prompt"]} for a in listed]}
 
+    @app.get("/api/tools")
+    async def tools_catalog():
+        """The tools an agent definition may select.
+
+        Kept separate from the agent rows because the wizard has to offer the
+        real catalogue: a hardcoded list in the browser drifts the moment a tool
+        is added, and the create endpoint rejects the whole definition over one
+        unknown name. Skill tools are left out on purpose — `prepare_agent`
+        appends them to every agent, so they are not a choice.
+        """
+        ready()
+        registry = tools_factory("catalog")
+        return {"code": 200, "data": [
+            {"name": tool.name, "description": tool.description,
+             "permission": tool.permission, "source": tool.source}
+            for name, tool in registry.tools.items() if name not in SKILL_TOOL_NAMES]}
+
     @app.get("/api/files/{file_id}/download")
     async def download_artifact(file_id: str):
         ready()
@@ -832,25 +879,69 @@ def create_app(settings=None, store=None, gateway=None):
             raise HTTPException(422, "Enable fewer MCP servers; at most 128 tools per run are supported.")
         return agent, remote
 
-    @app.post("/api/agents", status_code=201)
-    async def create_agent(agent: AgentDefinition):
-        ready()
-        uid = owner_id()
-        if agent.id == "default":
-            raise HTTPException(409, "The built-in agent id is reserved.")
+    async def validate_definition(agent: AgentDefinition) -> AgentDefinition:
+        """Everything a stored definition must satisfy, checked the same way twice.
+
+        Create and update share it: a definition that could not run is rejected at
+        save time rather than at the first turn, when the failure would look like
+        a runtime error to the person who just built it.
+        """
         prepared, remote = await prepare_agent(agent)
         if agent.model.provider not in gateway.adapters:
             raise HTTPException(422, "Model provider is not registered.")
         try:
-            validation = tools_factory("validation")
+            # A fresh registry per call: the cached factory registry accumulates
+            # remote tools across requests, so registering this agent's MCP tools
+            # into it raises "Duplicate tool" the second time the same server is
+            # used. Built-in names are copied in, nothing else is inherited.
+            validation = ToolRegistry()
+            for tool in tools_factory("validation").tools.values():
+                if tool.source == "builtin":
+                    validation.register(tool)
             for tool in remote:
-                validation.register(tool)
+                if tool.name not in validation.tools:
+                    validation.register(tool)
             validation.schemas(prepared.tools)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+        return prepared
+
+    @app.post("/api/agents", status_code=201)
+    async def create_agent(agent: AgentDefinition):
+        ready()
+        uid = owner_id()
+        if agent.id == DEFAULT_AGENT_ID:
+            raise HTTPException(409, "The built-in agent id is reserved.")
+        await validate_definition(agent)
         if await store.get("agents", agent.id, owner=uid):
             raise HTTPException(409, "Agent ID already exists.")
         return {"code": 201, "data": await store.put("agents", agent.model_dump(), owner=uid)}
+
+    @app.put("/api/agents/{agent_id}")
+    async def update_agent(agent_id: str, agent: AgentDefinition):
+        ready()
+        uid = owner_id()
+        # The built-in row is shared read-only: every account runs it, so no
+        # account may rewrite what the others see.
+        if agent_id == DEFAULT_AGENT_ID:
+            raise HTTPException(409, "The built-in agent is shared and cannot be edited.")
+        if await store.get("agents", agent_id, owner=uid) is None:
+            raise HTTPException(404, "Agent not found.")
+        # The path decides the identity: a body carrying another id must not be
+        # able to rename this row over somebody else's (or its own previous id).
+        agent = agent.model_copy(update={"id": agent_id})
+        await validate_definition(agent)
+        return {"code": 200, "data": await store.put("agents", agent.model_dump(), owner=uid)}
+
+    @app.delete("/api/agents/{agent_id}")
+    async def delete_agent(agent_id: str):
+        ready()
+        if agent_id == DEFAULT_AGENT_ID:
+            raise HTTPException(409, "The built-in agent is shared and cannot be deleted.")
+        result = await store.db.agents.delete_one({"id": agent_id, "owner_id": owner_id()})
+        if not result.deleted_count:
+            raise HTTPException(404, "Agent not found.")
+        return {"code": 200, "data": {"id": agent_id}}
 
     async def execute(agent, task, session_id, bus, turn_id, remote, resume=False):
         current_session.set(session_id)

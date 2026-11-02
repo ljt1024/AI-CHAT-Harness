@@ -335,6 +335,17 @@ class AuthService:
         logger.info("Created the initial account %s", user["username"])
         return user
 
+    async def first_owner(self) -> str | None:
+        """The oldest account, used to settle rows left over from before accounts.
+
+        Only consulted when the environment no longer names the operator: an
+        installation with accounts but no ADMIN_USER still has to decide who owns
+        the resources written by an earlier boot. Nobody can log in otherwise --
+        a row whose owner matches no account is unreadable by every account.
+        """
+        user = await self.store.db.users.find_one({}, {"id": 1}, sort=[("_id", 1)])
+        return (user or {}).get("id")
+
     async def adopt_ownerless(self, user_id: str) -> dict:
         """Bind resources written before accounts existed to the first account.
 
