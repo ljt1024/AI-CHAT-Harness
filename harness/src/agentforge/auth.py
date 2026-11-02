@@ -15,6 +15,7 @@ import contextvars
 import hashlib
 import hmac
 import logging
+import math
 import re
 import secrets
 import time
@@ -23,7 +24,9 @@ from datetime import datetime, timedelta, timezone
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
+from agentforge import phone as phone_number
 from agentforge.models import DEFAULT_AGENT_ID, new_id
+from agentforge.sms import SmsError, SmsMessage
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,9 @@ _GUEST_ID = re.compile(r"^guest_[A-Za-z0-9_-]{16,64}$")
 USERNAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{2,31}$")
 MIN_PASSWORD = 10
 MAX_PASSWORD = 200
+# A code is guessed by asking again, not by reading a dump, so the ceiling on
+# wrong answers matters more than the length of the secret.
+CODE_ATTEMPTS = 5
 _SCRYPT = {"n": 16384, "r": 8, "p": 1, "dklen": 32}
 # A wrong password and an unknown username must cost the same, otherwise the
 # response time tells an attacker which half they got right.
@@ -69,6 +75,20 @@ def valid_guest_id(value: str | None) -> bool:
 
 class AuthError(Exception):
     """A login attempt that must not reveal which half was wrong."""
+
+
+class SmsCodeError(Exception):
+    """A refused code request or check.
+
+    Carries a machine-readable reason instead of a sentence so the interface can
+    answer in the reader's language; `retry_after` lets it start a countdown
+    instead of saying "too often" to someone who will just click again.
+    """
+
+    def __init__(self, reason: str, retry_after: int = 0):
+        super().__init__(reason)
+        self.reason = reason
+        self.retry_after = retry_after
 
 
 def _b64(raw: bytes) -> str:
@@ -115,22 +135,51 @@ def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def _expired(moment) -> bool:
+    if not isinstance(moment, datetime):
+        return True
+    return moment.replace(tzinfo=None) <= _now().replace(tzinfo=None)
+
+
+def _code_matches(row: dict, code: str) -> bool:
+    try:
+        salt = _unb64(row["salt"])
+    except (KeyError, ValueError, TypeError):
+        return False
+    expected = hashlib.sha256(salt + (code or "").strip().encode()).hexdigest()
+    return hmac.compare_digest(expected, row.get("digest", ""))
+
+
 class AuthService:
     def __init__(self, store, session_hours: float = 12, max_failures: int = 5,
-                 lockout_seconds: float = 60):
+                 lockout_seconds: float = 60, code_ttl: int = 300, cooldown: int = 60,
+                 per_phone: int = 10, per_ip: int = 30):
         self.store = store
         self.session_hours = session_hours
         self.max_failures = max_failures
         self.lockout_seconds = lockout_seconds
+        self.code_ttl = code_ttl
+        self.cooldown = cooldown
+        self.per_phone = per_phone
+        self.per_ip = per_ip
         self._failures: dict[str, tuple[int, float]] = {}
 
     async def setup(self):
         await self.store.db.users.create_index("username", unique=True)
+        # One account per number. Sparse, because accounts made with a password
+        # have no phone at all and must not collide with each other on null.
+        await self.store.db.users.create_index("phone", unique=True, sparse=True)
         await self.store.db.auth_sessions.create_index("token_hash", unique=True)
         await self.store.db.auth_sessions.create_index("user_id")
         # One counter row per visitor per day; the unique index is what makes the
         # increment safe when two tabs of the same visitor start a turn together.
         await self.store.db.guest_usage.create_index([("id", 1), ("day", 1)], unique=True)
+        await self.store.db.sms_codes.create_index([("phone", 1), ("purpose", 1),
+                                                    ("created_at", -1)])
+        # A real Date rather than the ISO string used everywhere else, because
+        # this is the one column Mongo itself has to expire.
+        await self.store.db.sms_codes.create_index("expire_at", expireAfterSeconds=0)
+        await self.store.db.sms_sends.create_index([("id", 1), ("day", 1)], unique=True)
 
     # ---------------------------------------------------------------- accounts
     async def create_user(self, username: str, password: str) -> dict:
@@ -142,7 +191,7 @@ class AuthService:
             raise ValueError(f"Password must be {MIN_PASSWORD}-{MAX_PASSWORD} characters.")
         if await self.store.db.users.find_one({"username": username.lower()}):
             raise ValueError("That username is already taken.")
-        user = {"id": new_id(), "username": username.lower(),
+        user = {"id": new_id(), "username": username.lower(), "display_name": username,
                 "password": hash_password(password), "created_at": _iso(_now())}
         await self.store.db.users.insert_one(dict(user))
         return {k: v for k, v in user.items() if k != "password"}
@@ -153,6 +202,9 @@ class AuthService:
 
     async def user_by_id(self, identity: str):
         return await self.store.db.users.find_one({"id": identity}, {"_id": 0})
+
+    async def user_by_phone(self, phone: str):
+        return await self.store.db.users.find_one({"phone": phone}, {"_id": 0})
 
     def _locked(self, username: str) -> bool:
         attempts, since = self._failures.get(username, (0, 0.0))
@@ -181,12 +233,137 @@ class AuthService:
         user = await self.user_by_name(key) if key else None
         if _DUMMY_HASH is None:
             _DUMMY_HASH = hash_password("agentforge-dummy-password")
-        stored = user["password"] if user else _DUMMY_HASH
-        if not verify_password(password or "", stored) or user is None:
+        # Accounts created from a phone number have no password at all. They must
+        # cost the same as a wrong one, or "is this a phone account" becomes
+        # readable from the response time.
+        stored = (user or {}).get("password") or _DUMMY_HASH
+        if not verify_password(password or "", stored) or user is None or "password" not in user:
             self._record_failure(key)
             raise AuthError("Wrong username or password.")
         self._failures.pop(key, None)
         return {k: v for k, v in user.items() if k != "password"}
+
+    # ------------------------------------------------------------ phone accounts
+    async def create_phone_user(self, number: str) -> dict:
+        """Turn a verified number into an account.
+
+        The username is derived from the number, so there is nothing for the new
+        owner to choose and nothing to collide on but the number itself; the
+        masked number is the display name, which is what the sidebar shows.
+        """
+        # Checked before inserting rather than relying on the unique index: the
+        # index is the race guard, a second tab pressing "sign in" is the common
+        # case, and it should not surface as an error.
+        existing = await self.user_by_phone(number)
+        if existing:
+            return existing
+        base = "p" + phone_number.local(number)[1:]
+        for attempt in range(3):
+            username = base if attempt == 0 else f"{base}{secrets.token_hex(2)}"
+            user = {"id": new_id(), "username": username, "phone": number,
+                    "display_name": phone_number.mask(number), "created_at": _iso(_now())}
+            try:
+                await self.store.db.users.insert_one(dict(user))
+            except DuplicateKeyError:
+                # Either this number registered in another tab a moment ago, or
+                # an unrelated account already owns the derived username.
+                existing = await self.user_by_phone(number)
+                if existing:
+                    return existing
+                continue
+            logger.info("Registered %s", phone_number.mask(number))
+            return user
+        raise SmsCodeError("phone_taken")
+
+    async def bind_phone(self, user_id: str, number: str) -> dict:
+        existing = await self.user_by_phone(number)
+        if existing and existing["id"] != user_id:
+            raise SmsCodeError("phone_taken")
+        # No display-name write here, deliberately: an account made from a
+        # number already shows the mask, and every other account already has a
+        # name it chose -- binding a phone is not a rename.
+        await self.store.db.users.update_one({"id": user_id}, {"$set": {"phone": number}})
+        return {**(await self.user_by_id(user_id) or {}), "phone": number}
+
+    # ---------------------------------------------------------- verification codes
+    async def issue_code(self, raw_phone: str, purpose: str, ip: str, sender) -> dict:
+        """Send one code; return what the interface needs to start a countdown.
+
+        The row is written before the message goes out, so two requests racing on
+        the same number cannot both pass the cooldown check. A failed send takes
+        the row and the counters back, otherwise a provider outage would lock a
+        person out of trying again.
+        """
+        number = phone_number.normalize(raw_phone)
+        now = _now()
+        previous = await self.store.db.sms_codes.find_one(
+            {"phone": number, "purpose": purpose}, {"created_at": 1},
+            sort=[("created_at", -1)])
+        if previous:
+            elapsed = (now - datetime.fromisoformat(previous["created_at"])).total_seconds()
+            if elapsed < self.cooldown:
+                raise SmsCodeError("cooldown", math.ceil(self.cooldown - elapsed))
+        day = _iso(now)[:10]
+        await self._spend_send(number, day, self.per_phone)
+        if ip:
+            await self._spend_send(f"ip:{ip}", day, self.per_ip)
+
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        salt = secrets.token_bytes(16)
+        row = {"id": new_id(), "phone": number, "purpose": purpose,
+               "salt": _b64(salt),
+               # Not a password: a six-digit secret is guessable offline whatever
+               # we do. The salt is here so a database dump or a log line does
+               # not hand somebody a code that is still valid.
+               "digest": hashlib.sha256(salt + code.encode()).hexdigest(),
+               "attempts": 0, "sent_from": ip, "created_at": _iso(now),
+               "expire_at": now + timedelta(seconds=self.code_ttl)}
+        await self.store.db.sms_codes.insert_one(dict(row))
+        try:
+            await sender.send(SmsMessage(phone=number, code=code,
+                                         minutes=max(1, self.code_ttl // 60)))
+        except SmsError as exc:
+            await self.store.db.sms_codes.delete_one({"id": row["id"]})
+            await self._bump("sms_sends", number, day, -1)
+            if ip:
+                await self._bump("sms_sends", f"ip:{ip}", day, -1)
+            logger.error("No SMS reached %s: %s", phone_number.mask(number), exc)
+            raise SmsCodeError("send_failed") from None
+        return {"expiresIn": self.code_ttl, "cooldown": self.cooldown, "code": code}
+
+    async def verify_code(self, raw_phone: str, purpose: str, code: str) -> str:
+        """Check a code and burn it. Returns the normalised number on success.
+
+        Every wrong answer is counted, and the code dies with the attempt that
+        exceeds the ceiling: a six-digit secret survives a few seconds of
+        scripted guessing, not five minutes of it.
+        """
+        number = phone_number.normalize(raw_phone)
+        row = await self.store.db.sms_codes.find_one(
+            {"phone": number, "purpose": purpose}, sort=[("created_at", -1)])
+        if row is None:
+            raise SmsCodeError("expired")
+        if _expired(row.get("expire_at")) or int(row.get("attempts", 0)) >= CODE_ATTEMPTS:
+            await self.store.db.sms_codes.delete_one({"_id": row["_id"]})
+            raise SmsCodeError("expired" if _expired(row.get("expire_at")) else "too_many")
+        if not _code_matches(row, code):
+            updated = await self.store.db.sms_codes.find_one_and_update(
+                {"_id": row["_id"]}, {"$inc": {"attempts": 1}},
+                return_document=ReturnDocument.AFTER)
+            if int((updated or {}).get("attempts", 0)) >= CODE_ATTEMPTS:
+                await self.store.db.sms_codes.delete_one({"_id": row["_id"]})
+                raise SmsCodeError("too_many")
+            raise SmsCodeError("invalid")
+        await self.store.db.sms_codes.delete_one({"_id": row["_id"]})
+        return number
+
+    async def _spend_send(self, key: str, day: str, limit: int):
+        if await self._bump("sms_sends", key, day) > limit:
+            await self._bump("sms_sends", key, day, -1)
+            now = _now()
+            midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0,
+                                                         microsecond=0)
+            raise SmsCodeError("daily_limit", int((midnight - now).total_seconds()))
 
     # ---------------------------------------------------------------- sessions
     async def start_session(self, user_id: str) -> str:
@@ -241,17 +418,24 @@ class AuthService:
         return None
 
     async def _bump_guest(self, key: str, day: str, step: int = 1) -> int:
+        return await self._bump("guest_usage", key, day, step, field="turns")
+
+    async def _bump(self, collection: str, key: str, day: str, step: int = 1,
+                    field: str = "count") -> int:
+        """Increment one daily counter, creating it if this is the first.
+
+        The unique index is what makes this safe for two tabs of one visitor at
+        once: the loser of the upsert race retries against the row that won.
+        """
         query = {"id": key, "day": day}
+        update = {"$inc": {field: step}}
         try:
-            row = await self.store.db.guest_usage.find_one_and_update(
-                query, {"$inc": {"turns": step}}, upsert=True,
-                return_document=ReturnDocument.AFTER)
+            row = await self.store.db[collection].find_one_and_update(
+                query, update, upsert=True, return_document=ReturnDocument.AFTER)
         except DuplicateKeyError:
-            # Two tabs of one visitor raced on the upsert; the second one retries
-            # against the row the first created.
-            row = await self.store.db.guest_usage.find_one_and_update(
-                query, {"$inc": {"turns": step}}, return_document=ReturnDocument.AFTER)
-        return int(row.get("turns", 0)) if row else 0
+            row = await self.store.db[collection].find_one_and_update(
+                query, update, return_document=ReturnDocument.AFTER)
+        return int((row or {}).get(field, 0))
 
     async def guest_budget(self, guest_id: str, per_guest: int, daily: int) -> dict:
         """What the interface needs to say "3 free questions left"."""

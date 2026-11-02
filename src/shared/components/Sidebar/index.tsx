@@ -7,6 +7,7 @@ import EditTitDialog from './components/EditTitDialog'
 import DeleteDialog from './components/DeleteDialog'
 import { useChat, useChatDispatch } from '@/app/providers/ChatContext'
 import { useLanguage } from '@/app/providers/LanguageContext'
+import PhoneBindDialog from '@/features/auth/PhoneBindDialog'
 import { getSelectId, storageSelectId, type CovIdListItem } from '@/shared/utils/localMessages'
 import './index.css'
 
@@ -35,7 +36,8 @@ export default function Sidebar({ isLoading, account }: {
   isLoading: boolean;
   // `name` present means signed in; `turnsLeft` present means the anonymous
   // trial is running. Both live in one slot because only one is ever true.
-  account?: { name?: string; turnsLeft?: number; onSignOut?: () => void; onSignIn?: () => void };
+  account?: { name?: string; turnsLeft?: number; phone?: string;
+    onSignOut?: () => void; onSignIn?: () => void };
 }) {
   const { t, dateLocale } = useLanguage()
   const { covList } = useChat()
@@ -47,6 +49,7 @@ export default function Sidebar({ isLoading, account }: {
   const [editing, setEditing] = useState<CovIdListItem | null>(null)
   const [deleting, setDeleting] = useState<CovIdListItem | null>(null)
   const [records, setRecords] = useState(false)
+  const [binding, setBinding] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const expandRef = useRef<HTMLButtonElement>(null)
   const collapseRef = useRef<HTMLButtonElement>(null)
@@ -140,7 +143,16 @@ export default function Sidebar({ isLoading, account }: {
         {account && <div className="sidebar-account">
           {account.name ? <>
             <span className="sidebar-avatar" aria-hidden="true">{account.name.slice(0, 1).toUpperCase()}</span>
-            <span className="sidebar-footer-label" title={t('auth.signedInAs', { name: account.name })}>{account.name}</span>
+            {/* The name opens the account menu rather than a second row of
+                buttons: there is one thing to do here besides signing out. */}
+            <Popover placement="top-start" trigger="click" content={<div className="sidebar-operations">
+              <button type="button" onClick={() => setBinding(true)}>
+                {account.phone ? t('auth.bound', { phone: account.phone }) : t('auth.bindPhone')}
+              </button>
+            </div>}>
+              <button type="button" className="sidebar-footer-label sidebar-account-name"
+                title={t('auth.signedInAs', { name: account.name })}>{account.name}</button>
+            </Popover>
             <button type="button" className="sidebar-signout" onClick={() => account.onSignOut?.()} aria-label={t('auth.signOut')} title={t('auth.signOut')}>{t('auth.signOut')}</button>
           </> : <>
             <span className="sidebar-avatar" aria-hidden="true">·</span>
@@ -159,6 +171,7 @@ export default function Sidebar({ isLoading, account }: {
     </aside>
     {editing && <EditTitDialog isConfirmDialogOpen setIsConfirmDialogOpen={value => { if (!value) setEditing(null) }} covItem={editing} />}
     {deleting && <DeleteDialog isShowDeleteDialog setIsShowDeleteDialog={value => { if (!value) setDeleting(null) }} covItem={deleting} />}
+    {binding && <PhoneBindDialog onClose={() => setBinding(false)} />}
     <ChatRecordDialog isShowRecordDialog={records} setIsShowRecordDialog={setRecords} />
   </>
 }

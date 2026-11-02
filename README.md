@@ -42,9 +42,16 @@ MONGODB_URI=mongodb://localhost:27017
 AGENTFORGE_DB=agentforge
 AGENTFORGE_WORKSPACE=.agentforge/workspaces
 MCP_SERVER_URL=http://localhost:9000/mcp
-# 登录账号：启动时创建第一个账号；不设密码则无人能登录（所有 /api 返回 401）
+# 管理员账号：启动时创建第一个用户名/密码账号（不在网页上自助创建）
 ADMIN_USER=admin
 ADMIN_PASSWORD=一个至少 10 位的密码
+# 手机号注册/登录（ADR-0017）：完整配置项见 .env.example。
+# 默认 console 通道只把验证码写进日志；对外部署必须改成 tencent/aliyun 并填好凭证，
+# 否则发码接口返回 503；SMS_DEBUG_ECHO 永远不要在生产打开。
+SMS_PROVIDER=console
+SMS_DEBUG_ECHO=false
+# 关闭后新号码不能自助注册，只有已有账号能登录
+SIGNUP_OPEN=true
 # 访客试聊：不登录可先浏览并真实对话 N 轮（0=关闭，回到全站必须登录）；
 # 全站每日匿名轮数上限 + 匿名会话保留时长（小时，到期清理）
 GUEST_TURNS=4
@@ -98,9 +105,11 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 
 ### 账号与登录
 
-每个 `/api` 请求（`/api/auth/*`、`/health` 除外）都要先登录。启动时若设置了 `ADMIN_USER` 与 `ADMIN_PASSWORD`，服务会创建第一个账号——从不"谁先来谁注册"。登录成功后浏览器只拿到一枚 HttpOnly、SameSite=Lax 的 Cookie；会话本体在 MongoDB 里，登出、过期和撤号都会让它失效。密码用 `hashlib.scrypt` 加盐哈希，登录失败有按账号的限流锁定。
+每个 `/api` 请求（`/api/auth/*`、`/health` 除外）都要先登录。账号有两个入口：启动时由 `ADMIN_USER` / `ADMIN_PASSWORD` 创建的管理员账号（用户名密码，只能这样创建，不存在网页上抢注第一个账号），以及下文的手机号验证码自助注册。两条路径最终都只发一枚 HttpOnly、SameSite=Lax 的 Cookie；会话本体在 MongoDB 里，登出、过期和撤号都会让它失效。密码用 `hashlib.scrypt` 加盐哈希，登录失败有按账号的限流锁定。
 
-**访客试聊**（ADR-0015）：不登录也能进界面，并真实对话 `GUEST_TURNS` 轮（默认 4）。访客身份来自独立的 `agentforge_guest` Cookie，归属过滤原样生效——访客之间互相看不见。全站每日匿名轮数由 `GUEST_DAILY_TURNS` 封顶（清 Cookie 换不来新额度）；超过后返回 403，前端弹出登录框，**试聊的会话在登录后原样转到账号名下**。装技能、接 MCP、建智能体、执行沙箱命令等改动安装的操作不向访客开放，未认领的访客会话在 `GUEST_RETENTION_HOURS` 小时后清理。`GUEST_TURNS=0` 恢复"全站必须登录"。
+**手机号注册与登录**（ADR-0017）：登录框默认是「手机号」页签——填 11 位手机号、收 6 位验证码即可进入；**第一次验证一个新号码就等于注册**，不需要单独的注册页。账号本体没有密码，验证码是唯一的门，错 5 次即作废、5 分钟过期、单次消费。短信通道按 `SMS_PROVIDER` 选择：`tencent`（TC3-HMAC-SHA256 签名 SendSms）或 `aliyun`（RPC HMAC-SHA1 签名 Dysmsapi），签名都是 stdlib 实现、不新增依赖；`console` 是开发通道，验证码只打进服务端日志，再配 `SMS_DEBUG_ECHO=true` 才会回显到界面上。发送侧有三道闸：同号 60 秒冷却（`SMS_COOLDOWN`）、每号每日 `SMS_DAILY_PER_PHONE` 条、每 IP 每日 `SMS_DAILY_PER_IP` 条——验证码接口是公开的，没有这三道闸就成了烧短信预算的入口。`SIGNUP_OPEN=false` 关闭自助注册（未注册号码直接 403，也不花一条短信）。已有的用户名密码账号不受影响，可在侧边栏账号菜单里绑定手机号（验证码发到 `purpose=bind`），绑定时号码被别人占用会明确拒绝。接口与日志里出现的手机号一律是 `138****8000` 掩码。
+
+**访客试聊**（ADR-0015）：不登录也能进界面，并真实对话 `GUEST_TURNS` 轮（默认 4）。访客身份来自独立的 `agentforge_guest` Cookie，归属过滤原样生效——访客之间互相看不见。全站每日匿名轮数由 `GUEST_DAILY_TURNS` 封顶（清 Cookie 换不来新额度）；超过后返回 403，前端弹出登录框，**试聊的会话在登录后原样转到账号名下**（手机号注册同样接管）。装技能、接 MCP、建智能体、执行沙箱命令等改动安装的操作不向访客开放，未认领的访客会话在 `GUEST_RETENTION_HOURS` 小时后清理。`GUEST_TURNS=0` 恢复"全站必须登录"。
 
 授权模型：资源（智能体、会话、轨迹、产物、技能、MCP 服务）都带 `owner_id`，读取、续跑、审批、订阅 SSE、下载文件全部按调用者过滤，别人的资源返回 404——既不能访问，也无法确认它存在。内置的 `default` 智能体是共享只读的，任何人可以运行但不能占据这个 id。写请求额外校验 Origin（反代场景认 `X-Forwarded-Host`，或用 `ALLOWED_ORIGINS` 显式放行）。
 
@@ -263,11 +272,13 @@ uv run pytest tests -q          # 后端全量测试（含真实 Docker / MongoD
 /usr/bin/python3 scripts/verify_guest_flow.py  --password <管理密码> # 访客试聊/额度用尽/登录接管
 ```
 
+手机号链路无需短信凭证即可本地验收：后端用 `SMS_PROVIDER=console SMS_DEBUG_ECHO=true` 启动，登录框会把验证码直接回显出来；这套开关绝不能带到公网部署。云通道（腾讯云 / 阿里云）只需在 `.env` 填好 `SMS_*` 并把 `SMS_PROVIDER` 改成对应值，配置不全时发码接口会明确返回 503 而不是静默降级。
+
 Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验证脚本位于 `scripts/`，部分会调用真实模型并产生费用。
 
 ## 边界与限制
 
-- 除访客试聊白名单（目录读取、发起对话、应答审批，ADR-0015）外，所有 `/api` 请求都需要登录（`/api/auth/*` 与 `/health` 除外）。首个账号由 `ADMIN_USER` / `ADMIN_PASSWORD` 在启动时创建，会话是可撤销的服务端记录，浏览器只持有 HttpOnly Cookie。身份只能来自 Cookie——请求体、工具参数或模型输出都无法指定用户。访客身份同样带 `owner_id`，互相隔离；试聊有每访客与全站每日双重额度。跨用户的资源统一返回 404。
+- 除访客试聊白名单（目录读取、发起对话、应答审批，ADR-0015）外，所有 `/api` 请求都需要登录（`/api/auth/*` 与 `/health` 除外）。管理员账号由 `ADMIN_USER` / `ADMIN_PASSWORD` 在启动时创建；手机号账号由验证码自助创建（ADR-0017），两者共用同一套会话与归属过滤。会话是可撤销的服务端记录，浏览器只持有 HttpOnly Cookie。身份只能来自 Cookie——请求体、工具参数或模型输出都无法指定用户。访客身份同样带 `owner_id`，互相隔离；试聊有每访客与全站每日双重额度。跨用户的资源统一返回 404。
 - **沙箱按「会话」隔离，租约再绑定到账号**：每个会话独占一个容器与一个工作区目录，容器只挂载自己的目录，所以会话之间（含不同账号、不同访客）互不可见。租约现在带 `owner`：拿别人的会话 id 也认领不到那台容器和那批文件，池直接拒绝；`/api/sandbox/exec` 的一次性容器同样按调用者记账；每账号同时最多 `SANDBOX_MAX_PER_OWNER`（默认 4）个沙箱，避免一个人占满整池。工作区目录仍是 `workspaces/sandboxes/<sandbox-id>` 扁平存放——预热容器在认领前就已经挂好了目录，事后搬动会让它继续写进已删除的 inode；隔离靠租约而不是路径（见 [ADR-0016](docs/adr/0016-sandbox-lease-ownership.md)）。T15.A3 剩余的按用户目录、MCP 凭证加密与迁移演练尚未做。
 - 受限工具不等于 Docker 安全边界，真正隔离由沙箱提供。
 - 尚未提供通用联网搜索；命令执行只在**离线** Docker 沙箱内进行，不能访问外网。远程 MCP 是唯一出网路径：它不进沙箱，在宿主网络里、带着服务令牌调用，所以其风险由「远端注解 + 审批」承担，而不是由沙箱承担。

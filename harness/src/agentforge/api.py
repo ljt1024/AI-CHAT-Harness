@@ -16,7 +16,8 @@ from pydantic import BaseModel, Field, StrictBool
 from agentforge.config import Settings
 from agentforge.artifacts import ArtifactEventBus
 from agentforge.auth import (GUEST_COOKIE, SESSION_COOKIE, AuthError, AuthService,
-                             current_user, is_guest, new_guest_id, valid_guest_id)
+                             SmsCodeError, current_user, is_guest, new_guest_id,
+                             valid_guest_id)
 from agentforge.capabilities import (MCPServerRequest, MAX_CONFIG, parse_config, parse_servers,
                                      public_server, run_servers, server_tools)
 from agentforge.context import ContextManager
@@ -32,6 +33,8 @@ from agentforge.permissions import ApprovalManager
 from agentforge.policy import InterventionPolicy
 from agentforge.prompts import with_response_language
 from agentforge.store import MongoDBStore
+from agentforge import phone as phone_number
+from agentforge.sms import build_sender
 from agentforge.tools.ask import AskUserTool
 from agentforge.tools.base import ToolRegistry
 from agentforge.tools.fs import FileTool, Workspace
@@ -86,6 +89,23 @@ class MCPToggle(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=200)
+
+
+class SmsCodeRequest(BaseModel):
+    """Ask for a code. `bind` is only honoured for a signed-in caller."""
+
+    phone: str = Field(min_length=6, max_length=24)
+    purpose: str = Field(default="login", pattern=r"^(login|bind)$")
+
+
+class SmsLoginRequest(BaseModel):
+    phone: str = Field(min_length=6, max_length=24)
+    code: str = Field(min_length=4, max_length=12)
+
+
+class PhoneBindRequest(BaseModel):
+    phone: str = Field(min_length=6, max_length=24)
+    code: str = Field(min_length=4, max_length=12)
 
 
 class SandboxFile(BaseModel):
@@ -187,7 +207,13 @@ def create_app(settings=None, store=None, gateway=None):
     isolated_tools = {}
     run_sandboxes = {}
     skill_manager = SkillManager(store)
-    auth = AuthService(store, session_hours=settings.session_hours)
+    auth = AuthService(store, session_hours=settings.session_hours,
+                       code_ttl=settings.sms_code_ttl, cooldown=settings.sms_cooldown,
+                       per_phone=settings.sms_daily_per_phone,
+                       per_ip=settings.sms_daily_per_ip)
+    # None when the provider is named but not configured. The endpoints answer
+    # 503 rather than silently printing codes into the log.
+    sms = build_sender(settings)
 
     def tools_factory(session_id):
         if session_id in isolated_tools:
@@ -342,11 +368,13 @@ def create_app(settings=None, store=None, gateway=None):
     # Exposed so operators (and the runtime status endpoint) can inspect what is running.
     app.state.runs, app.state.finished_runs = runs, finished_runs
     app.state.auth = auth
+    app.state.sms = sms
 
     # The only routes reachable without a session. Everything else under /api is
     # refused before it reaches a handler, so a new endpoint is protected by
     # default instead of by remembering to add a check.
-    PUBLIC_API = {"/api/auth/login", "/api/auth/logout"}
+    PUBLIC_API = {"/api/auth/login", "/api/auth/logout",
+                  "/api/auth/sms/code", "/api/auth/sms/verify"}
 
     # What an anonymous visitor may reach: reading the catalogue, running a real
     # turn, and answering the approval that turn raised. Anything that changes
@@ -453,8 +481,11 @@ def create_app(settings=None, store=None, gateway=None):
         identity = user["id"] if user else guest
         claim = current_user.set(identity) if identity else None
         try:
-            if identity and request.method not in {"GET", "HEAD", "OPTIONS"} \
-                    and not same_origin(request):
+            # Applies to every unsafe method, signed in or not: a form posted
+            # from another site would otherwise be able to sign a visitor into
+            # an account the attacker owns (login CSRF), which a check gated on
+            # "has an identity already" cannot see.
+            if request.method not in {"GET", "HEAD", "OPTIONS"} and not same_origin(request):
                 return JSONResponse({"detail": "Cross-origin request rejected."},
                                     status_code=403)
             if user is not None:
@@ -474,22 +505,29 @@ def create_app(settings=None, store=None, gateway=None):
                                 secure=settings.cookie_secure, path="/")
         return response
 
-    @app.post("/api/auth/login")
-    async def login(payload: LoginRequest, request: Request, response: Response):
-        if not app.state.ready:
-            raise HTTPException(503, "MongoDB unavailable. Start docker compose up -d mongo and "
-                                     "restart Harness.")
-        try:
-            user = await auth.authenticate(payload.username, payload.password)
-        except AuthError as exc:
-            logger.info("login failed user=%s", payload.username[:32])
-            raise HTTPException(401, str(exc)) from None
+    def public_user(user: dict) -> dict:
+        """What the browser may know about an account.
+
+        The phone leaves the server masked: the interface never needs the full
+        number to show who is signed in, and the full one is exactly what a
+        cross-site script would be after.
+        """
+        return {"id": user["id"], "username": user["username"],
+                "displayName": user.get("display_name") or user["username"],
+                "phone": phone_number.mask(user["phone"]) if user.get("phone") else ""}
+
+    async def finish_login(user: dict, request: Request, response: Response):
+        """Everything that happens once we know who is calling.
+
+        One place, because a password login and a code login differ only in how
+        they got here: both start a session, and both carry the visitor's trial
+        transcript over instead of dropping it. Failing to move the transcript
+        must not fail the login -- the account exists and the cookie is set.
+        """
         token = await auth.start_session(user["id"])
         response.set_cookie(SESSION_COOKIE, token, max_age=int(settings.session_hours * 3600),
-                            httponly=True, samesite="lax", secure=settings.cookie_secure, path="/")
-        # Signing in is the moment a trial becomes an account: the transcript the
-        # visitor was looking at moves over instead of vanishing. Failing here
-        # must not fail the login -- the account exists and the cookie is set.
+                            httponly=True, samesite="lax", secure=settings.cookie_secure,
+                            path="/")
         guest = request.cookies.get(GUEST_COOKIE, "")
         if valid_guest_id(guest):
             try:
@@ -497,8 +535,112 @@ def create_app(settings=None, store=None, gateway=None):
             except Exception:
                 logger.warning("Could not adopt guest transcript %s", guest, exc_info=True)
             response.delete_cookie(GUEST_COOKIE, path="/")
+        return {"code": 200, "data": public_user(user)}
+
+    def client_ip(request: Request) -> str:
+        """The caller's address, for the per-address send budget.
+
+        Behind nginx the socket address is the proxy, so the forwarded header is
+        the only thing that distinguishes two visitors. It is client-controlled
+        and therefore only a budget key, never an authorisation.
+        """
+        forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+        return forwarded or (request.client.host if request.client else "")
+
+    def require_ready():
+        if not app.state.ready:
+            raise HTTPException(503, "MongoDB unavailable. Start docker compose up -d mongo and "
+                                     "restart Harness.")
+
+    @app.post("/api/auth/login")
+    async def login(payload: LoginRequest, request: Request, response: Response):
+        require_ready()
+        try:
+            user = await auth.authenticate(payload.username, payload.password)
+        except AuthError as exc:
+            logger.info("login failed user=%s", payload.username[:32])
+            raise HTTPException(401, str(exc)) from None
         logger.info("login user=%s", user["username"])
-        return {"code": 200, "data": {"id": user["id"], "username": user["username"]}}
+        return await finish_login(user, request, response)
+
+    @app.post("/api/auth/sms/code")
+    async def send_code(payload: SmsCodeRequest, request: Request):
+        """Send a sign-in code, or a binding code to a signed-in account.
+
+        Registration and sign-in share one endpoint because they are one flow:
+        whether this number is new is not something the sender should have to
+        know before asking, and telling it here would turn the endpoint into a
+        way to test whether somebody has an account.
+        """
+        require_ready()
+        try:
+            number = phone_number.normalize(payload.phone)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        user = getattr(request.state, "user", None)
+        if payload.purpose == "bind":
+            if user is None:
+                raise HTTPException(401, detail={"code": "login_required"})
+            bound = await auth.user_by_phone(number)
+            if bound and bound["id"] != user["id"]:
+                raise HTTPException(409, detail={"code": "phone_taken"})
+        else:
+            # Do not spend a message on a number that cannot become an account.
+            if not settings.signup_open and await auth.user_by_phone(number) is None:
+                raise HTTPException(403, detail={"code": "signup_closed"})
+        if sms is None:
+            raise HTTPException(503, detail={"code": "sms_unavailable"})
+        try:
+            sent = await auth.issue_code(number, payload.purpose, client_ip(request), sms)
+        except SmsCodeError as exc:
+            status = 429 if exc.reason in {"cooldown", "daily_limit"} else 502
+            raise HTTPException(status, detail={"code": exc.reason,
+                                               "retryAfter": exc.retry_after}) from None
+        data = {"expiresIn": sent["expiresIn"], "cooldown": sent["cooldown"]}
+        if getattr(sms, "echo", False):
+            # Console channel with echo on: lets a tester finish signing in
+            # without a phone. `build_sender` refuses to do this quietly.
+            data["debugCode"] = sent["code"]
+        logger.info("sms code sent phone=%s purpose=%s", phone_number.mask(number),
+                    payload.purpose)
+        return {"code": 200, "data": data}
+
+    @app.post("/api/auth/sms/verify")
+    async def verify_sms(payload: SmsLoginRequest, request: Request, response: Response):
+        """Sign in with a code; an unknown number becomes a new account."""
+        require_ready()
+        try:
+            number = await auth.verify_code(payload.phone, "login", payload.code)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except SmsCodeError as exc:
+            raise HTTPException(400, detail={"code": exc.reason}) from None
+        user = await auth.user_by_phone(number)
+        if user is None:
+            if not settings.signup_open:
+                raise HTTPException(403, detail={"code": "signup_closed"})
+            user = await auth.create_phone_user(number)
+        logger.info("login by phone=%s", phone_number.mask(number))
+        return await finish_login(user, request, response)
+
+    @app.post("/api/auth/phone")
+    async def bind_phone(payload: PhoneBindRequest, request: Request):
+        """Attach a number to an existing account (the one `bootstrap()` made)."""
+        require_ready()
+        user = getattr(request.state, "user", None)
+        if user is None:
+            raise HTTPException(401, detail={"code": "login_required"})
+        try:
+            number = await auth.verify_code(payload.phone, "bind", payload.code)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except SmsCodeError as exc:
+            raise HTTPException(400, detail={"code": exc.reason}) from None
+        try:
+            updated = await auth.bind_phone(user["id"], number)
+        except SmsCodeError as exc:
+            raise HTTPException(409, detail={"code": exc.reason}) from None
+        return {"code": 200, "data": public_user(updated)}
 
     @app.post("/api/auth/logout")
     async def logout(request: Request, response: Response):
@@ -516,7 +658,7 @@ def create_app(settings=None, store=None, gateway=None):
         """
         user = getattr(request.state, "user", None)
         if user is not None:
-            return {"code": 200, "data": {"id": user["id"], "username": user["username"]},
+            return {"code": 200, "data": public_user(user),
                     "guest": {"allowed": False, "turnsLeft": 0, "turnsTotal": 0}}
         guest = getattr(request.state, "guest", "")
         try:

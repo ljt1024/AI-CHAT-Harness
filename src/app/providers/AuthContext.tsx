@@ -3,6 +3,7 @@ import {
   UNAUTHORIZED_EVENT,
   fetchSession,
   signIn as requestSignIn,
+  signInWithCode as requestSignInWithCode,
   signOut as requestSignOut,
   type GuestBudget,
   type SessionUser,
@@ -21,9 +22,13 @@ interface AuthValue {
   /** Non-null while the sign-in dialog is open. */
   signInReason: SignInReason | null;
   signIn: (username: string, password: string) => Promise<void>;
+  /** The phone door: a code, and an account created on first use. */
+  signInWithCode: (phone: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
   askToSignIn: (reason?: SignInReason) => void;
   dismissSignIn: () => void;
+  /** Re-read the session after something changed it outside a sign-in. */
+  refresh: () => Promise<void>;
   /** Spend one trial turn locally, so the counter moves with the message. */
   spendTurn: () => void;
 }
@@ -80,6 +85,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await reload();
   }, [reload]);
 
+  const signInWithCode = useCallback(async (phone: string, code: string) => {
+    await requestSignInWithCode(phone, code);
+    // Same re-read as the password door: a first-time number brings an account
+    // into existence, and the trial transcript may have moved with it.
+    await reload();
+  }, [reload]);
+
   const signOut = useCallback(async () => {
     try {
       await requestSignOut();
@@ -103,8 +115,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(() => ({
-    user, status, guest, signInReason, signIn, signOut, askToSignIn, dismissSignIn, spendTurn,
-  }), [user, status, guest, signInReason, signIn, signOut, askToSignIn, dismissSignIn, spendTurn]);
+    user, status, guest, signInReason, signIn, signInWithCode, signOut, askToSignIn,
+    dismissSignIn, refresh: reload, spendTurn,
+  }), [user, status, guest, signInReason, signIn, signInWithCode, signOut, askToSignIn,
+    dismissSignIn, reload, spendTurn]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

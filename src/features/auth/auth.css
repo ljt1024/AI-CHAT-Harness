@@ -92,6 +92,82 @@
   gap: 14px;
 }
 
+.login-fields {
+  display: grid;
+  gap: 14px;
+}
+
+.login-tabs {
+  display: grid;
+  grid-auto-flow: column;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 12px;
+  background: var(--input-bg);
+}
+
+.login-tab {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-muted-color);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.login-tab--active {
+  background: var(--surface-elevated);
+  color: var(--text-color);
+  box-shadow: 0 1px 3px rgba(29, 51, 92, 0.12);
+}
+
+/* The code field and its button are one row: the button is about the field
+   beside it, not about the form. */
+.login-code-row {
+  display: flex;
+  gap: 8px;
+}
+
+.login-code-row input {
+  flex: 1;
+  min-width: 0;
+  letter-spacing: 2px;
+}
+
+.login-code-send {
+  flex-shrink: 0;
+  min-width: 104px;
+  padding: 0 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-color);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.login-code-send:disabled {
+  color: var(--text-muted-color);
+  cursor: default;
+}
+
+.login-hint {
+  margin: 0;
+  color: var(--text-muted-color);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.login-hint--dev {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--input-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .login-backdrop {
   position: fixed;
   inset: 0;

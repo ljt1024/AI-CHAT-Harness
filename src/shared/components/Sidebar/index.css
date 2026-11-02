@@ -110,5 +110,9 @@ a.sidebar-icon-button { text-decoration: none; }
 
 .sidebar-account { display: flex; align-items: center; gap: 8px; padding: 8px 6px 0; font-size: 13px; color: var(--sidebar-muted); }
 .sidebar-account .sidebar-footer-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The name is a button now (it opens the account menu), so reset what a button
+   brings with it and keep the label looking like a label. */
+.sidebar-account-name { flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.sidebar-account-name:hover { color: var(--sidebar-ink); }
 .sidebar-signout { flex-shrink: 0; padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 8px; background: transparent; color: var(--sidebar-muted); font: inherit; font-size: 12px; cursor: pointer; }
 .sidebar-signout:hover { color: var(--danger-color); border-color: var(--danger-color); }

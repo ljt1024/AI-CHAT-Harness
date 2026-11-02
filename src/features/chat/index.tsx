@@ -778,7 +778,8 @@ const ChatAI: React.FC = () => {
         <Sidebar
           isLoading={isLoading}
           account={user
-            ? { name: user.username, onSignOut: () => { void signOut() } }
+            ? { name: user.displayName || user.username, phone: user.phone,
+                onSignOut: () => { void signOut() } }
             : { turnsLeft: guest.allowed ? guest.turnsLeft : undefined,
                 onSignIn: () => askToSignIn('sign_in') }}
         />
