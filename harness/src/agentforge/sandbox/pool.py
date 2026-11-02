@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
+import hashlib
 import logging
 import re
 import time
@@ -25,14 +26,19 @@ class Lease:
     state: SandboxState
     session_id: str | None = None
     used_at: float = 0
+    # The account this sandbox was handed to. A cached lease stays bound to it,
+    # so a second account naming the same session cannot resume onto its files.
+    owner: str = ""
 
 
 class SandboxPool:
     def __init__(self, runner, warm_size=2, max_size=8, idle_seconds=600,
-                 breaker=None, clock=time.monotonic, acquire_attempts=3):
+                 breaker=None, clock=time.monotonic, acquire_attempts=3,
+                 max_per_owner=None):
         if not 0 <= warm_size <= max_size:
             raise ValueError("Warm size must be between zero and max size.")
         self.runner, self.warm_size, self.max_size = runner, warm_size, max_size
+        self.max_per_owner = min(max_per_owner or max_size, max_size)
         self.idle_seconds, self.clock = idle_seconds, clock
         self.acquire_attempts = acquire_attempts
         self.breaker = breaker or CircuitBreaker(clock=clock)
@@ -117,7 +123,11 @@ class SandboxPool:
                 async with self.lock:
                     self.creating -= 1
 
-    async def _reserve(self, session_id: str, image: str) -> Lease | None:
+    def _claim_count(self, owner: str) -> int:
+        return sum(1 for entry in self.entries.values()
+                   if entry.state == SandboxState.CLAIMED and entry.owner == owner)
+
+    async def _reserve(self, session_id: str, image: str, owner: str) -> Lease | None:
         """Claim a cached sandbox for this session, else a warm one.
 
         Returns None when the caller has to create a fresh sandbox; the lock
@@ -130,28 +140,38 @@ class SandboxPool:
                 if lease.session_id == session_id and lease.state != SandboxState.DESTROY:
                     if lease.state == SandboxState.CLAIMED:
                         raise SandboxUnavailable("Session already owns an active sandbox lease.")
+                    if lease.owner and owner and lease.owner != owner:
+                        # The session id alone is not an access right: a cached
+                        # sandbox still holds the previous account's files.
+                        raise SandboxUnavailable("Session sandbox belongs to another account.")
                     if lease.sandbox.image != image:
                         raise SandboxUnavailable("A session cannot change sandbox image.")
                     self.breaker.before_call()
                     lease.state, lease.session_id = SandboxState.CLAIMED, session_id
-                    lease.used_at = self.clock()
+                    lease.owner, lease.used_at = owner, self.clock()
                     return lease
             if session_id not in self.workspaces:
                 warm = next((e for e in self.entries.values()
                     if e.state == SandboxState.WARM and e.sandbox.image == image), None)
                 if warm is not None:
+                    if self._claim_count(owner) >= self.max_per_owner:
+                        raise SandboxUnavailable(
+                            "This account already has its share of sandboxes running. Wait for one to finish.")
                     self.breaker.before_call()
                     warm.state, warm.session_id = SandboxState.CLAIMED, session_id
-                    warm.used_at = self.clock()
+                    warm.owner, warm.used_at = owner, self.clock()
                     return warm
             if len(self.entries) + self.creating >= self.max_size:
                 raise SandboxUnavailable("Sandbox pool is at capacity. Wait for another session to finish.")
+            if self._claim_count(owner) >= self.max_per_owner:
+                raise SandboxUnavailable(
+                    "This account already has its share of sandboxes running. Wait for one to finish.")
             self.breaker.before_call()
             self.creating += 1
             self.pending_sessions.add(session_id)
             return None
 
-    async def acquire(self, session_id, image="python:3.12-slim") -> Lease:
+    async def acquire(self, session_id, image="python:3.12-slim", owner="") -> Lease:
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", session_id):
             raise ValueError("Invalid sandbox session ID.")
         if self.closed:
@@ -160,7 +180,7 @@ class SandboxPool:
         # candidate instead of recursing, which had no depth limit and could
         # exhaust the stack whenever Docker kept reporting unhealthy leases.
         for _ in range(self.acquire_attempts):
-            selected = await self._reserve(session_id, image)
+            selected = await self._reserve(session_id, image, owner)
             if selected is None:
                 # No cached or warm sandbox; a creation slot is already reserved.
                 break
@@ -179,7 +199,7 @@ class SandboxPool:
             if self.closed:
                 await self.runner.destroy(sandbox)
                 raise SandboxUnavailable("Sandbox pool closed during creation.")
-            selected = Lease(sandbox, SandboxState.CLAIMED, session_id, self.clock())
+            selected = Lease(sandbox, SandboxState.CLAIMED, session_id, self.clock(), owner)
             async with self.lock:
                 self.entries[sandbox.id] = selected
                 self.workspaces[session_id] = sandbox.workspace
@@ -212,7 +232,7 @@ class SandboxPool:
             self.entries.pop(lease.sandbox.id, None)
         await self.runner.destroy(lease.sandbox)
 
-    async def discard(self, session_id: str) -> bool:
+    async def discard(self, session_id: str, owner: str | None = None) -> bool:
         """Forget a session's sandbox: container, lease and directory.
 
         `release` deliberately keeps all three so the same conversation can
@@ -220,10 +240,16 @@ class SandboxPool:
         of them should outlive it — and the directory otherwise never goes
         away: `workspaces` protects it from every sweep, and nothing prunes
         that map.
+
+        Passing `owner` makes the call refuse a lease that belongs to someone
+        else, so a caller that skipped its own ownership check cannot delete
+        another account's files by naming its session.
         """
         async with self.lock:
             lease = next((e for e in self.entries.values()
                           if e.session_id == session_id), None)
+            if owner is not None and lease is not None and lease.owner and lease.owner != owner:
+                return False
             workspace = self.workspaces.pop(session_id, None)
             if lease is not None:
                 lease.state = SandboxState.DESTROY
@@ -246,12 +272,24 @@ class SandboxPool:
         for lease in expired:
             await self._destroy(lease)
 
+    @staticmethod
+    def owner_digest(owner: str) -> str:
+        """A short, non-reversible label for status output.
+
+        `/health` is public, so the raw account id (which starts with `user_` or
+        `guest_`) must not travel with it; a digest still lets an operator tell
+        two tenants apart in the pool listing.
+        """
+        return hashlib.sha256(owner.encode()).hexdigest()[:8] if owner else ""
+
     def status(self):
         return {"states": {state.value: sum(e.state == state for e in self.entries.values())
                            for state in SandboxState}, "creating": self.creating,
                 "circuit": self.breaker.status(), "last_error": self.last_error,
+                "maxPerOwner": self.max_per_owner,
                 "sandboxes": [{"id": e.sandbox.id, "state": e.state.value,
-                    "session_id": e.session_id, "image": e.sandbox.image} for e in self.entries.values()]}
+                    "session_id": e.session_id, "image": e.sandbox.image,
+                    "owner": self.owner_digest(e.owner)} for e in self.entries.values()]}
 
     async def close(self):
         self.closed = True

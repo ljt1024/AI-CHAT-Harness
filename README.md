@@ -129,7 +129,7 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 ### Docker 沙箱
 
 - 非 root 运行、只读根分区、仅工作区可写、默认禁用网络、不继承宿主环境变量（只传 `PATH`/`LANG`/`HOME`）。
-- 预热池按会话归属隔离，空闲回收；工作区快照以 tar 存入 GridFS，恢复前校验归属、完整性与归档路径。
+- 预热池按会话归属隔离，租约再绑定到认领它的账号（拿别人的会话 id 认领不到），每账号的并发沙箱数受 `SANDBOX_MAX_PER_OWNER` 限制；空闲回收；工作区快照以 tar 存入 GridFS，恢复前校验归属、完整性与归档路径。
 - 容器被回收后**工作区目录保留**：同一会话重建沙箱时挂回同一目录，文件还在。清理发生在三处——**删除会话**立即销毁该会话的容器与工作区（对话都没了，它产生的文件不该留在磁盘上）；进程启动时扫掉上一进程遗留的容器与无人可重建的目录（`SIGKILL` 不会走关闭钩子，这些容器原本会永远跑着）；维护循环每小时回收一次。
 - 判断"遗留"靠归属而非状态：容器带 `agentforge.instance` 标签，进程启动时在 `workspaces/instances/` 写一份带 pid 的声明。启动清理只回收**属主进程已不在**的容器和无人可重建的目录，同机另一个还活着的后端、它正在用的容器与目录都不动。正常关闭会撤掉自己的声明。
 - 沙箱失败**不会**回退到宿主执行。离线命令与已安装技能脚本默认自动执行；宿主命令、技能安装、以及未声明只读的 MCP 调用仍需人工确认（见 [ADR-0013](docs/adr/0013-autonomous-docker-commands.md)）。
@@ -259,7 +259,7 @@ Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验�
 ## 边界与限制
 
 - 除访客试聊白名单（目录读取、发起对话、应答审批，ADR-0015）外，所有 `/api` 请求都需要登录（`/api/auth/*` 与 `/health` 除外）。首个账号由 `ADMIN_USER` / `ADMIN_PASSWORD` 在启动时创建，会话是可撤销的服务端记录，浏览器只持有 HttpOnly Cookie。身份只能来自 Cookie——请求体、工具参数或模型输出都无法指定用户。访客身份同样带 `owner_id`，互相隔离；试聊有每访客与全站每日双重额度。跨用户的资源统一返回 404。
-- **沙箱的隔离粒度是「会话」，不是「用户」**：每个会话独占一个容器与一个工作区目录，容器只挂载自己的目录，所以会话之间（含不同账号、不同访客）互不可见；会话 id 不可预测且所有接触沙箱的入口都校验过归属，因此别人的容器不会被认领。但沙箱层本身不认识用户——租约与工作区只记 `session_id`，没有 `owner` 字段可做二次校验，也没有「每用户最多几个容器」的配额（一个人开满 `SANDBOX_MAX_SIZE` 就会让别人无容器可用）。真正按用户切分工作区、配额与租户边界属于 T15.A3，仍未做。
+- **沙箱按「会话」隔离，租约再绑定到账号**：每个会话独占一个容器与一个工作区目录，容器只挂载自己的目录，所以会话之间（含不同账号、不同访客）互不可见。租约现在带 `owner`：拿别人的会话 id 也认领不到那台容器和那批文件，池直接拒绝；`/api/sandbox/exec` 的一次性容器同样按调用者记账；每账号同时最多 `SANDBOX_MAX_PER_OWNER`（默认 4）个沙箱，避免一个人占满整池。工作区目录仍是 `workspaces/sandboxes/<sandbox-id>` 扁平存放——预热容器在认领前就已经挂好了目录，事后搬动会让它继续写进已删除的 inode；隔离靠租约而不是路径（见 [ADR-0016](docs/adr/0016-sandbox-lease-ownership.md)）。T15.A3 剩余的按用户目录、MCP 凭证加密与迁移演练尚未做。
 - 受限工具不等于 Docker 安全边界，真正隔离由沙箱提供。
 - 尚未提供通用联网搜索；命令执行只在**离线** Docker 沙箱内进行，不能访问外网。远程 MCP 是唯一出网路径：它不进沙箱，在宿主网络里、带着服务令牌调用，所以其风险由「远端注解 + 审批」承担，而不是由沙箱承担。
 - 产物预览为净化环境，交互脚本只在下载后的文件中运行。
@@ -268,7 +268,7 @@ Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验�
 
 - [实现与验收记录](docs/IMPLEMENTATION.md) · [待办与决策](NOTES.md)
 - [技能与 MCP 能力说明](docs/CAPABILITIES.md)
-- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md)
+- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md)
 
 ## 常见问题
 

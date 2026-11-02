@@ -168,3 +168,57 @@ async def test_discard_of_an_unknown_session_changes_nothing(tmp_path):
         assert await pool.discard("never-ran") is False
     finally:
         await pool.close()
+
+
+async def test_a_cached_sandbox_stays_bound_to_its_account(tmp_path):
+    """Knowing a session id is not the same thing as owning it."""
+    pool = SandboxPool(FakeRunner(tmp_path), warm_size=0, max_size=4)
+    try:
+        first = await pool.acquire("session-a", owner="user_a")
+        await pool.release("session-a")
+
+        with pytest.raises(SandboxUnavailable):
+            await pool.acquire("session-a", owner="user_b")
+
+        again = await pool.acquire("session-a", owner="user_a")
+        assert again.sandbox.id == first.sandbox.id, "the owner must resume onto its own files"
+        await pool.release("session-a")
+    finally:
+        await pool.close()
+
+
+async def test_one_account_cannot_take_the_whole_pool(tmp_path):
+    pool = SandboxPool(FakeRunner(tmp_path), warm_size=0, max_size=4, max_per_owner=1)
+    try:
+        await pool.acquire("session-a", owner="user_a")
+        await pool.acquire("session-b", owner="user_b")
+        with pytest.raises(SandboxUnavailable):
+            await pool.acquire("session-c", owner="user_a")
+        # The refusal is per account, not a global block.
+        third = await pool.acquire("session-c", owner="user_c")
+        assert third.owner == "user_c"
+        await pool.release("session-c")
+    finally:
+        await pool.close()
+
+
+async def test_status_labels_an_account_by_digest_only(tmp_path):
+    pool = SandboxPool(FakeRunner(tmp_path), warm_size=0, max_size=2)
+    try:
+        await pool.acquire("session-a", owner="user_secret")
+        entry = pool.status()["sandboxes"][0]
+        assert entry["owner"] and entry["owner"] != "user_secret"
+        assert len(entry["owner"]) == 8
+    finally:
+        await pool.close()
+
+
+async def test_discard_refuses_another_accounts_lease(tmp_path):
+    pool = SandboxPool(FakeRunner(tmp_path), warm_size=0, max_size=2)
+    try:
+        await pool.acquire("session-a", owner="user_a")
+        assert await pool.discard("session-a", owner="user_b") is False
+        assert "session-a" in pool.workspaces
+        assert await pool.discard("session-a", owner="user_a") is True
+    finally:
+        await pool.close()

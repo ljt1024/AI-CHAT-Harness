@@ -220,10 +220,11 @@ async def test_deleting_a_session_discards_its_sandbox(tmp_path, monkeypatch):
     """
     from agentforge.sandbox.pool import SandboxPool
 
-    discarded = []
+    discarded, owners = [], []
 
-    async def fake_discard(self, session_id):
+    async def fake_discard(self, session_id, owner=None):
         discarded.append(session_id)
+        owners.append(owner)
         return True
 
     monkeypatch.setattr(SandboxPool, "discard", fake_discard)
@@ -238,3 +239,6 @@ async def test_deleting_a_session_discards_its_sandbox(tmp_path, monkeypatch):
             await store.put("sessions", {"id": "throwaway", "sessionId": "throwaway"})
             assert (await client.delete("/api/sessions/throwaway")).status_code == 200
     assert discarded == ["throwaway"]
+    # The account travels with the cleanup, so the pool can refuse a lease that
+    # is not the caller's even if a future caller forgets to check.
+    assert owners and owners[0]

@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     intervention_policy: Path = Path("../config/intervention.yaml")
     sandbox_warm_size: int = Field(default=2, ge=0, le=8)
     sandbox_max_size: int = Field(default=8, ge=1, le=32)
+    # One account may not occupy the whole pool: a single user opening many
+    # conversations would otherwise starve everyone else of containers.
+    sandbox_max_per_owner: int = Field(default=4, ge=1, le=32)
     sandbox_idle_seconds: int = Field(default=600, ge=1)
     # The image a session starts in when it does not ask for one. Anything here
     # has to be an image SandboxPolicy admits: the wrong registry prefix would

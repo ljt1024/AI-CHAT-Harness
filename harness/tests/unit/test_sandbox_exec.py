@@ -45,11 +45,12 @@ class FakePool:
         self.released = []
         self.acquired = []
 
-    async def acquire(self, session_id, image="python:3.12-slim"):
+    async def acquire(self, session_id, image="python:3.12-slim", owner=""):
         self.acquired.append(session_id)
+        self.owner = owner
         workspace = Workspace(self.root / session_id)
         sandbox = Sandbox(new_id(), object(), workspace, image)
-        return Lease(sandbox, SandboxState.CLAIMED, session_id)
+        return Lease(sandbox, SandboxState.CLAIMED, session_id, 0, owner)
 
     async def release(self, session_id):
         self.released.append(session_id)
@@ -77,6 +78,9 @@ async def test_command_runs_inside_the_sandbox(tmp_path, monkeypatch):
     assert pool.runner.calls[0][0] == ["python", "run.py"]
     # The lease is handed back even on the happy path, or the pool leaks.
     assert pool.released == pool.acquired
+    # The container is attributed to the caller, so it cannot be resumed by
+    # anyone who merely knows the disposable session id.
+    assert pool.owner and not pool.owner.startswith("guest_")
 
 
 async def test_files_are_written_into_the_sandbox_workspace(tmp_path, monkeypatch):

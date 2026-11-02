@@ -182,7 +182,8 @@ def create_app(settings=None, store=None, gateway=None):
         gateway.register("deepseek", DeepSeekAdapter(settings.deepseek_api_key.get_secret_value()))
     pool = SandboxPool(DockerRunner(settings.agentforge_workspace / "sandboxes"),
         warm_size=settings.sandbox_warm_size, max_size=settings.sandbox_max_size,
-        idle_seconds=settings.sandbox_idle_seconds)
+        idle_seconds=settings.sandbox_idle_seconds,
+        max_per_owner=settings.sandbox_max_per_owner)
     isolated_tools = {}
     run_sandboxes = {}
     skill_manager = SkillManager(store)
@@ -853,6 +854,10 @@ def create_app(settings=None, store=None, gateway=None):
 
     async def execute(agent, task, session_id, bus, turn_id, remote, resume=False):
         current_session.set(session_id)
+        # The run lock recorded who owns this session when it was started. The
+        # sandbox lease is bound to the same account, so a task created without
+        # the request's context cannot quietly inherit someone else's container.
+        lease_owner = session_owners.get(session_id, "") or owner_id()
         try:
             async with asyncio.timeout(900):
                 previous = await store.get("sessions", session_id)
@@ -874,7 +879,8 @@ def create_app(settings=None, store=None, gateway=None):
                     await bus.emit({"type": "skill_deleted", "sessionId": session_id, "turnId": turn_id,
                         "skill_id": package["id"], "name": package["name"]})
                 if isolated:
-                    lease = await pool.acquire(session_id, agent.sandbox_policy.image)
+                    lease = await pool.acquire(session_id, agent.sandbox_policy.image,
+                                               owner=lease_owner)
                     run_sandboxes[session_id] = lease.sandbox
                     registry = ToolRegistry()
                     for name in agent.tools:
@@ -1100,7 +1106,7 @@ def create_app(settings=None, store=None, gateway=None):
         # sandbox would otherwise keep running with the files it wrote, and the
         # workspace directory is protected from every sweep while the pool
         # remembers it.
-        await pool.discard(session_id)
+        await pool.discard(session_id, owner=owner_id())
         isolated_tools.pop(session_id, None)
         run_sandboxes.pop(session_id, None)
         session_owners.pop(session_id, None)
@@ -1136,7 +1142,7 @@ def create_app(settings=None, store=None, gateway=None):
         session_id = new_id()
         lease = None
         try:
-            lease = await pool.acquire(session_id, request.image)
+            lease = await pool.acquire(session_id, request.image, owner=owner_id())
             for item in request.files:
                 relative = item.path
                 content = item.content
