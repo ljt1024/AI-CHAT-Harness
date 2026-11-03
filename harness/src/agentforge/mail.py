@@ -15,7 +15,7 @@ import logging
 import smtplib
 from dataclasses import dataclass
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
 
 from agentforge import email_address
 from agentforge.delivery import DeliveryError
@@ -58,7 +58,7 @@ class SmtpMailer:
     name = "smtp"
 
     def __init__(self, host: str, port: int, user: str, password: str, sender: str,
-                 tls: str = "starttls", timeout: float = 10):
+                 tls: str = "starttls", timeout: float = 10, name: str = ""):
         missing = [label for label, value in (
             ("SMTP_HOST", host), ("SMTP_FROM", sender or user)) if not value]
         if missing:
@@ -67,14 +67,19 @@ class SmtpMailer:
             raise MailError(f"Unknown SMTP_TLS {tls!r}. Use starttls, ssl or none.")
         self.host, self.port = host, int(port)
         self.credentials = (user, password)
-        self.sender = sender or user
+        # SMTP_FROM may already be written as "Name <a@b>"; the address is what
+        # the envelope and the Message-ID need, so split it off instead of
+        # carrying the angle brackets into a domain.
+        embedded, address = parseaddr(sender or user)
+        self.sender = address or (sender or user)
+        self.name = name or embedded
         self.tls, self.timeout = tls, timeout
 
     # ------------------------------------------------------------------ message
     def message(self, to: str, code: str, minutes: int) -> EmailMessage:
         """A plain-text letter, kept separate so it can be asserted without a server."""
         message = EmailMessage()
-        message["From"] = self.sender
+        message["From"] = formataddr((self.name, self.sender)) if self.name else self.sender
         message["To"] = to
         message["Subject"] = f"登录验证码 {code}"
         message["Date"] = formatdate(localtime=False)
@@ -138,7 +143,8 @@ def build_mailer(settings) -> object | None:
         try:
             return SmtpMailer(settings.smtp_host, settings.smtp_port,
                               settings.smtp_user, settings.smtp_password.get_secret_value(),
-                              settings.smtp_from, settings.smtp_tls, settings.smtp_timeout)
+                              settings.smtp_from, settings.smtp_tls, settings.smtp_timeout,
+                              settings.smtp_from_name)
         except MailError as exc:
             logger.error("%s Sign-in by email will answer 503 until it is fixed.", exc)
             return None

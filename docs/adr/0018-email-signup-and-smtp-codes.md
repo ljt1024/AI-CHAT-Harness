@@ -82,7 +82,11 @@ the change is a new identifier and a new transport, not a new subsystem.
   address decide whether the code reaches an inbox or a spam folder, and a
   provider that throttles silently looks exactly like a wrong address. The
   endpoint reports `send_failed`, but it cannot tell the user *why* the mailbox
-  did not receive it.
+  did not receive it. On the consumer providers this ADR was built against, the
+  address is not negotiable either: QQ and 163 answer 553 when `From` differs
+  from the authenticated account, so a separate `SMTP_FROM_NAME` is the only
+  freedom left, and moving off a personal mailbox means moving to another
+  account rather than relabelling this one.
 - An address can be reassigned or forwarded, so it is a weaker identity than a
   phone number for account recovery. There is still no second factor and no
   recovery code; that remains a future ADR.

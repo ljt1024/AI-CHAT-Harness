@@ -106,6 +106,10 @@ class Settings(BaseSettings):
     smtp_password: SecretStr = SecretStr("")
     # Defaults to SMTP_USER, which is what most providers require anyway.
     smtp_from: str = ""
+    # Shown in the inbox list next to the address, e.g. "AgentForge". The address
+    # itself still has to be the authenticated account on QQ and 163: they answer
+    # 553 when the two differ, so a display name is the only part that is free.
+    smtp_from_name: str = ""
     # starttls (587), ssl (465), none (a local sink such as Mailpit).
     smtp_tls: str = "starttls"
     smtp_timeout: float = Field(default=10, gt=0, le=60)

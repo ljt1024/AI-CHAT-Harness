@@ -29,6 +29,19 @@ def test_the_letter_carries_the_code_and_the_expiry():
     assert "123456" in body and "5 分钟" in body
 
 
+def test_a_display_name_never_leaks_into_the_message_id():
+    """The inbox label is free; the angle brackets are not."""
+    message = mailer(name="AgentForge").message("alice@example.com", "123456", 5)
+    assert message["From"] == "AgentForge <bot@example.com>"
+    assert message["Message-ID"].endswith("@example.com>")
+
+
+def test_a_display_name_baked_into_the_from_address_is_split_off():
+    message = mailer(sender="AI-CHAT <bot@example.com>").message("alice@example.com", "123456", 5)
+    assert message["From"] == "AI-CHAT <bot@example.com>"
+    assert message["Message-ID"].endswith("@example.com>"), message["Message-ID"]
+
+
 def test_a_missing_host_is_an_error_not_a_console_fallback():
     with pytest.raises(MailError):
         mailer(host="", sender="")

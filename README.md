@@ -51,6 +51,8 @@ ADMIN_PASSWORD=一个至少 10 位的密码
 MAIL_PROVIDER=console
 SMTP_HOST=
 SMTP_FROM=
+# 收件箱里显示的名字；QQ/163 要求 SMTP_FROM 与账号一致，能改的只有这个名字
+SMTP_FROM_NAME=
 MAIL_DEBUG_ECHO=false
 # 关闭后新地址不能自助注册，只有已有账号能登录
 SIGNUP_OPEN=true
