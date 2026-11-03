@@ -28,11 +28,12 @@ from urllib.parse import quote
 import httpx
 
 from agentforge import phone as phone_number
+from agentforge.delivery import DeliveryError
 
 logger = logging.getLogger(__name__)
 
 
-class SmsError(Exception):
+class SmsError(DeliveryError):
     """A send the operator has to see: bad credentials, rejected template."""
 
 
@@ -45,7 +46,18 @@ class SmsMessage:
     minutes: int
 
 
-class ConsoleSender:
+class _SmsSender:
+    """Adapter so `auth.py` can deliver without knowing which channel it holds.
+
+    Mail has the same method, which is the whole point: the code lifecycle does
+    not branch on how the message travels.
+    """
+
+    async def deliver(self, to: str, code: str, minutes: int) -> None:
+        await self.send(SmsMessage(phone=to, code=code, minutes=minutes))
+
+
+class ConsoleSender(_SmsSender):
     """Development channel: the code goes to the log and nowhere else.
 
     Deliberately never silent: an operator who forgot to configure a provider
@@ -63,7 +75,7 @@ class ConsoleSender:
                        phone_number.mask(message.phone), message.code, message.minutes)
 
 
-class TencentSender:
+class TencentSender(_SmsSender):
     """Tencent Cloud SMS (SendSms, 2021-01-11) signed with TC3-HMAC-SHA256."""
 
     name = "tencent"
@@ -103,7 +115,7 @@ class TencentSender:
         await _post(f"https://{self.host}", headers, payload, "Tencent", self.timeout)
 
 
-class AliyunSender:
+class AliyunSender(_SmsSender):
     """Aliyun Dysmsapi (SendSms, 2017-05-25) signed with the RPC HMAC-SHA1 scheme."""
 
     name = "aliyun"

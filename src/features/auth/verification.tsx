@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { t, type TranslationKey } from '@/app/i18n';
-import { AuthRequestError, requestCode, type SmsPurpose } from './api';
+import { AuthRequestError, requestEmailCode, type CodePurpose } from './api';
 
 /** Every refusal the code endpoints can return, in the reader's language. */
 const REASONS = {
@@ -10,14 +10,17 @@ const REASONS = {
   too_many: 'auth.sms.too_many',
   daily_limit: 'auth.sms.daily_limit',
   send_failed: 'auth.sms.send_failed',
+  mail_unavailable: 'auth.sms.mail_unavailable',
   sms_unavailable: 'auth.sms.sms_unavailable',
   signup_closed: 'auth.sms.signup_closed',
+  email_taken: 'auth.sms.email_taken',
   phone_taken: 'auth.sms.phone_taken',
   login_required: 'auth.sms.login_required',
+  invalid_email: 'auth.sms.invalid_email',
   invalid_phone: 'auth.sms.invalid_phone',
 } as const satisfies Record<string, TranslationKey>;
 
-export function smsErrorMessage(failure: unknown): string {
+export function codeErrorMessage(failure: unknown): string {
   if (failure instanceof AuthRequestError) {
     const key = REASONS[failure.code as keyof typeof REASONS];
     if (key) return t(key, { seconds: failure.retryAfter });
@@ -33,7 +36,7 @@ export function smsErrorMessage(failure: unknown): string {
  * one place that knows how long the server said to wait. Both the sign-in form
  * and the bind dialog use it, so the two cannot disagree about the cooldown.
  */
-export function useSmsCode(purpose: SmsPurpose) {
+export function useCode(purpose: CodePurpose) {
   const [cooldown, setCooldown] = useState(0);
   const [sending, setSending] = useState(false);
   const [debugCode, setDebugCode] = useState('');
@@ -45,11 +48,11 @@ export function useSmsCode(purpose: SmsPurpose) {
     return () => window.clearTimeout(timer);
   }, [cooldown]);
 
-  const request = useCallback(async (phone: string) => {
+  const request = useCallback(async (email: string) => {
     setSending(true);
     setNotice('');
     try {
-      const challenge = await requestCode(phone, purpose);
+      const challenge = await requestEmailCode(email, purpose);
       setCooldown(challenge.cooldown);
       setDebugCode(challenge.debugCode ?? '');
       setNotice(t('auth.codeSent', { minutes: Math.max(1, Math.round(challenge.expiresIn / 60)) }));
@@ -68,7 +71,7 @@ export function useSmsCode(purpose: SmsPurpose) {
   return { cooldown, sending, debugCode, notice, request, reset };
 }
 
-export function SmsCodeHint({ notice, debugCode }: { notice: string; debugCode: string }) {
+export function CodeHint({ notice, debugCode }: { notice: string; debugCode: string }) {
   return <>
     {notice && <p className="login-hint" role="status">{notice}</p>}
     {debugCode && <p className="login-hint login-hint--dev" role="status">
@@ -84,7 +87,7 @@ export function cooldownLabel(cooldown: number, sending: boolean): string {
   return t('auth.sendCode');
 }
 
-/** Keeps the phone field from being submitted with a shape the server rejects. */
-export function looksLikePhone(value: string): boolean {
-  return /^1[3-9]\d{9}$/.test(value.replace(/[\s()-]/g, ''));
+/** Keeps the address field from being submitted with a shape the server rejects. */
+export function looksLikeEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/.test(value.trim());
 }

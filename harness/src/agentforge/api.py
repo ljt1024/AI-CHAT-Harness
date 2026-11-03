@@ -33,7 +33,9 @@ from agentforge.permissions import ApprovalManager
 from agentforge.policy import InterventionPolicy
 from agentforge.prompts import with_response_language
 from agentforge.store import MongoDBStore
+from agentforge import email_address
 from agentforge import phone as phone_number
+from agentforge.mail import build_mailer
 from agentforge.sms import build_sender
 from agentforge.tools.ask import AskUserTool
 from agentforge.tools.base import ToolRegistry
@@ -105,6 +107,23 @@ class SmsLoginRequest(BaseModel):
 
 class PhoneBindRequest(BaseModel):
     phone: str = Field(min_length=6, max_length=24)
+    code: str = Field(min_length=4, max_length=12)
+
+
+class EmailCodeRequest(BaseModel):
+    """Ask for a code by email. `bind` is only honoured for a signed-in caller."""
+
+    email: str = Field(min_length=5, max_length=254)
+    purpose: str = Field(default="login", pattern=r"^(login|bind)$")
+
+
+class EmailLoginRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    code: str = Field(min_length=4, max_length=12)
+
+
+class EmailBindRequest(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
     code: str = Field(min_length=4, max_length=12)
 
 
@@ -208,12 +227,14 @@ def create_app(settings=None, store=None, gateway=None):
     run_sandboxes = {}
     skill_manager = SkillManager(store)
     auth = AuthService(store, session_hours=settings.session_hours,
-                       code_ttl=settings.sms_code_ttl, cooldown=settings.sms_cooldown,
-                       per_phone=settings.sms_daily_per_phone,
-                       per_ip=settings.sms_daily_per_ip)
+                       code_ttl=settings.verify_code_ttl,
+                       cooldown=settings.verify_cooldown,
+                       per_address=settings.verify_daily_per_address,
+                       per_ip=settings.verify_daily_per_ip)
     # None when the provider is named but not configured. The endpoints answer
     # 503 rather than silently printing codes into the log.
     sms = build_sender(settings)
+    mail = build_mailer(settings)
 
     def tools_factory(session_id):
         if session_id in isolated_tools:
@@ -369,12 +390,14 @@ def create_app(settings=None, store=None, gateway=None):
     app.state.runs, app.state.finished_runs = runs, finished_runs
     app.state.auth = auth
     app.state.sms = sms
+    app.state.mail = mail
 
     # The only routes reachable without a session. Everything else under /api is
     # refused before it reaches a handler, so a new endpoint is protected by
     # default instead of by remembering to add a check.
     PUBLIC_API = {"/api/auth/login", "/api/auth/logout",
-                  "/api/auth/sms/code", "/api/auth/sms/verify"}
+                  "/api/auth/sms/code", "/api/auth/sms/verify",
+                  "/api/auth/email/code", "/api/auth/email/verify"}
 
     # What an anonymous visitor may reach: reading the catalogue, running a real
     # turn, and answering the approval that turn raised. Anything that changes
@@ -508,12 +531,13 @@ def create_app(settings=None, store=None, gateway=None):
     def public_user(user: dict) -> dict:
         """What the browser may know about an account.
 
-        The phone leaves the server masked: the interface never needs the full
-        number to show who is signed in, and the full one is exactly what a
-        cross-site script would be after.
+        The address and the number leave the server masked: the interface never
+        needs either in full to show who is signed in, and the full value is
+        exactly what a cross-site script would be after.
         """
         return {"id": user["id"], "username": user["username"],
                 "displayName": user.get("display_name") or user["username"],
+                "email": email_address.mask(user["email"]) if user.get("email") else "",
                 "phone": phone_number.mask(user["phone"]) if user.get("phone") else ""}
 
     async def finish_login(user: dict, request: Request, response: Response):
@@ -591,7 +615,8 @@ def create_app(settings=None, store=None, gateway=None):
         if sms is None:
             raise HTTPException(503, detail={"code": "sms_unavailable"})
         try:
-            sent = await auth.issue_code(number, payload.purpose, client_ip(request), sms)
+            sent = await auth.issue_code(number, payload.purpose, client_ip(request), sms,
+                                         channel="sms")
         except SmsCodeError as exc:
             status = 429 if exc.reason in {"cooldown", "daily_limit"} else 502
             raise HTTPException(status, detail={"code": exc.reason,
@@ -610,7 +635,8 @@ def create_app(settings=None, store=None, gateway=None):
         """Sign in with a code; an unknown number becomes a new account."""
         require_ready()
         try:
-            number = await auth.verify_code(payload.phone, "login", payload.code)
+            number = await auth.verify_code(payload.phone, "login", payload.code,
+                                            channel="sms")
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         except SmsCodeError as exc:
@@ -631,13 +657,96 @@ def create_app(settings=None, store=None, gateway=None):
         if user is None:
             raise HTTPException(401, detail={"code": "login_required"})
         try:
-            number = await auth.verify_code(payload.phone, "bind", payload.code)
+            number = await auth.verify_code(payload.phone, "bind", payload.code,
+                                            channel="sms")
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         except SmsCodeError as exc:
             raise HTTPException(400, detail={"code": exc.reason}) from None
         try:
             updated = await auth.bind_phone(user["id"], number)
+        except SmsCodeError as exc:
+            raise HTTPException(409, detail={"code": exc.reason}) from None
+        return {"code": 200, "data": public_user(updated)}
+
+    @app.post("/api/auth/email/code")
+    async def send_email_code(payload: EmailCodeRequest, request: Request):
+        """Send a sign-in code, or a binding code to a signed-in account.
+
+        Same shape as the SMS door, on purpose: registration and sign-in are one
+        flow, and asking "is this address new" before sending would turn the
+        endpoint into an account-enumeration oracle.
+        """
+        require_ready()
+        try:
+            address = email_address.normalize(payload.email)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        user = getattr(request.state, "user", None)
+        if payload.purpose == "bind":
+            if user is None:
+                raise HTTPException(401, detail={"code": "login_required"})
+            bound = await auth.user_by_email(address)
+            if bound and bound["id"] != user["id"]:
+                raise HTTPException(409, detail={"code": "email_taken"})
+        else:
+            # Do not spend a message on an address that cannot become an account.
+            if not settings.signup_open and await auth.user_by_email(address) is None:
+                raise HTTPException(403, detail={"code": "signup_closed"})
+        if mail is None:
+            raise HTTPException(503, detail={"code": "mail_unavailable"})
+        try:
+            sent = await auth.issue_code(address, payload.purpose, client_ip(request),
+                                         mail, channel="email")
+        except SmsCodeError as exc:
+            status = 429 if exc.reason in {"cooldown", "daily_limit"} else 502
+            raise HTTPException(status, detail={"code": exc.reason,
+                                               "retryAfter": exc.retry_after}) from None
+        data = {"expiresIn": sent["expiresIn"], "cooldown": sent["cooldown"]}
+        if getattr(mail, "echo", False):
+            # Console channel with echo on: lets a tester finish signing in
+            # without a mailbox. `build_mailer` refuses to do this quietly.
+            data["debugCode"] = sent["code"]
+        logger.info("email code sent address=%s purpose=%s",
+                    email_address.mask(address), payload.purpose)
+        return {"code": 200, "data": data}
+
+    @app.post("/api/auth/email/verify")
+    async def verify_email_code(payload: EmailLoginRequest, request: Request,
+                                response: Response):
+        """Sign in with a code; an unknown address becomes a new account."""
+        require_ready()
+        try:
+            address = await auth.verify_code(payload.email, "login", payload.code,
+                                            channel="email")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except SmsCodeError as exc:
+            raise HTTPException(400, detail={"code": exc.reason}) from None
+        user = await auth.user_by_email(address)
+        if user is None:
+            if not settings.signup_open:
+                raise HTTPException(403, detail={"code": "signup_closed"})
+            user = await auth.create_email_user(address)
+        logger.info("login by email=%s", email_address.mask(address))
+        return await finish_login(user, request, response)
+
+    @app.post("/api/auth/email")
+    async def bind_email(payload: EmailBindRequest, request: Request):
+        """Attach an address to an existing account (the one `bootstrap()` made)."""
+        require_ready()
+        user = getattr(request.state, "user", None)
+        if user is None:
+            raise HTTPException(401, detail={"code": "login_required"})
+        try:
+            address = await auth.verify_code(payload.email, "bind", payload.code,
+                                             channel="email")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except SmsCodeError as exc:
+            raise HTTPException(400, detail={"code": exc.reason}) from None
+        try:
+            updated = await auth.bind_email(user["id"], address)
         except SmsCodeError as exc:
             raise HTTPException(409, detail={"code": exc.reason}) from None
         return {"code": 200, "data": public_user(updated)}

@@ -3,7 +3,7 @@ import {
   UNAUTHORIZED_EVENT,
   fetchSession,
   signIn as requestSignIn,
-  signInWithCode as requestSignInWithCode,
+  signInWithEmail as requestSignInWithEmail,
   signOut as requestSignOut,
   type GuestBudget,
   type SessionUser,
@@ -22,8 +22,8 @@ interface AuthValue {
   /** Non-null while the sign-in dialog is open. */
   signInReason: SignInReason | null;
   signIn: (username: string, password: string) => Promise<void>;
-  /** The phone door: a code, and an account created on first use. */
-  signInWithCode: (phone: string, code: string) => Promise<void>;
+  /** The email door: a code, and an account created on first use. */
+  signInWithCode: (email: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
   askToSignIn: (reason?: SignInReason) => void;
   dismissSignIn: () => void;
@@ -85,9 +85,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await reload();
   }, [reload]);
 
-  const signInWithCode = useCallback(async (phone: string, code: string) => {
-    await requestSignInWithCode(phone, code);
-    // Same re-read as the password door: a first-time number brings an account
+  const signInWithCode = useCallback(async (email: string, code: string) => {
+    await requestSignInWithEmail(email, code);
+    // Same re-read as the password door: a first-time address brings an account
     // into existence, and the trial transcript may have moved with it.
     await reload();
   }, [reload]);

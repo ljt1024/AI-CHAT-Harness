@@ -2,28 +2,29 @@ import { useState, type FormEvent } from 'react';
 import { useAuth } from '@/app/providers/AuthContext';
 import { t } from '@/app/i18n';
 import {
-  SmsCodeHint, cooldownLabel, looksLikePhone, smsErrorMessage, useSmsCode,
-} from './sms';
+  CodeHint, codeErrorMessage, cooldownLabel, looksLikeEmail, useCode,
+} from './verification';
 
-type Mode = 'phone' | 'password';
+type Mode = 'email' | 'password';
 
 /**
  * The form itself, with no opinion about where it is presented: the dialog uses
  * it, and so would a full-page gate if a deployment ever wanted one back.
  *
- * Two doors, because they answer different questions. A phone and a code is
- * what a person has; a username and a password is what the account created at
- * deployment time has, and what anyone who bound a phone still keeps.
+ * Two doors, because they answer different questions. An email address and a
+ * code is what a person has, and the first code creates the account; a username
+ * and a password is what the account created at deployment time has, and what
+ * anyone who bound an address still keeps.
  */
 export default function LoginForm({ onSuccess }: { onSuccess?: () => void }) {
   const { signIn, signInWithCode } = useAuth();
-  const [mode, setMode] = useState<Mode>('phone');
+  const [mode, setMode] = useState<Mode>('email');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
-  const sms = useSmsCode('login');
+  const verification = useCode('login');
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -36,22 +37,22 @@ export default function LoginForm({ onSuccess }: { onSuccess?: () => void }) {
   const sendCode = async () => {
     setError('');
     try {
-      await sms.request(phone.trim());
+      await verification.request(email.trim());
     } catch (failure) {
-      setError(smsErrorMessage(failure));
+      setError(codeErrorMessage(failure));
     }
   };
 
-  const submitPhone = async (event: FormEvent) => {
+  const submitCode = async (event: FormEvent) => {
     event.preventDefault();
     if (busy) return;
     setBusy(true);
     setError('');
     try {
-      await signInWithCode(phone.trim(), code.trim());
+      await signInWithCode(email.trim(), code.trim());
       onSuccess?.();
     } catch (failure) {
-      setError(smsErrorMessage(failure));
+      setError(codeErrorMessage(failure));
       setBusy(false);
     }
   };
@@ -70,27 +71,27 @@ export default function LoginForm({ onSuccess }: { onSuccess?: () => void }) {
     }
   };
 
-  const codeLabel = cooldownLabel(sms.cooldown, sms.sending);
-  const phoneReady = looksLikePhone(phone);
+  const codeLabel = cooldownLabel(verification.cooldown, verification.sending);
+  const emailReady = looksLikeEmail(email);
 
   return (
     <div className="login-form">
       <div className="login-tabs" role="tablist" aria-label={t('auth.title')}>
-        <button type="button" role="tab" aria-selected={mode === 'phone'}
-          className={`login-tab${mode === 'phone' ? ' login-tab--active' : ''}`}
-          onClick={() => switchTo('phone')}>{t('auth.tab.phone')}</button>
+        <button type="button" role="tab" aria-selected={mode === 'email'}
+          className={`login-tab${mode === 'email' ? ' login-tab--active' : ''}`}
+          onClick={() => switchTo('email')}>{t('auth.tab.email')}</button>
         <button type="button" role="tab" aria-selected={mode === 'password'}
           className={`login-tab${mode === 'password' ? ' login-tab--active' : ''}`}
           onClick={() => switchTo('password')}>{t('auth.tab.password')}</button>
       </div>
 
-      {mode === 'phone' ? (
-        <form className="login-fields" onSubmit={submitPhone}>
+      {mode === 'email' ? (
+        <form className="login-fields" onSubmit={submitCode}>
           <label className="login-field">
-            <span>{t('auth.phone')}</span>
-            <input value={phone} onChange={event => setPhone(event.target.value)}
-              inputMode="numeric" autoComplete="tel" autoFocus required maxLength={20}
-              placeholder={t('auth.phonePlaceholder')} />
+            <span>{t('auth.email')}</span>
+            <input value={email} onChange={event => setEmail(event.target.value)}
+              type="email" inputMode="email" autoComplete="email" autoFocus required
+              maxLength={254} placeholder={t('auth.emailPlaceholder')} />
           </label>
           <label className="login-field">
             <span>{t('auth.code')}</span>
@@ -99,14 +100,16 @@ export default function LoginForm({ onSuccess }: { onSuccess?: () => void }) {
                 inputMode="numeric" autoComplete="one-time-code" required maxLength={8}
                 placeholder={t('auth.codePlaceholder')} />
               <button type="button" className="login-code-send" onClick={sendCode}
-                disabled={sms.sending || sms.cooldown > 0 || !phoneReady}>{codeLabel}</button>
+                disabled={verification.sending || verification.cooldown > 0 || !emailReady}>
+                {codeLabel}
+              </button>
             </div>
           </label>
-          <SmsCodeHint notice={sms.notice} debugCode={sms.debugCode} />
+          <CodeHint notice={verification.notice} debugCode={verification.debugCode} />
           {error && <p className="login-error" role="alert">{error}</p>}
           <button className="login-submit" type="submit"
-            disabled={busy || !phoneReady || code.trim().length < 4}>
-            {busy ? t('auth.phoneSubmitting') : t('auth.phoneSubmit')}
+            disabled={busy || !emailReady || code.trim().length < 4}>
+            {busy ? t('auth.emailSubmitting') : t('auth.emailSubmit')}
           </button>
           <p className="login-hint">{t('auth.autoRegister')}</p>
         </form>

@@ -24,9 +24,10 @@ from datetime import datetime, timedelta, timezone
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
+from agentforge import email_address
 from agentforge import phone as phone_number
+from agentforge.delivery import DeliveryError
 from agentforge.models import DEFAULT_AGENT_ID, new_id
-from agentforge.sms import SmsError, SmsMessage
 
 logger = logging.getLogger(__name__)
 
@@ -153,33 +154,39 @@ def _code_matches(row: dict, code: str) -> bool:
 class AuthService:
     def __init__(self, store, session_hours: float = 12, max_failures: int = 5,
                  lockout_seconds: float = 60, code_ttl: int = 300, cooldown: int = 60,
-                 per_phone: int = 10, per_ip: int = 30):
+                 per_address: int = 10, per_ip: int = 30):
         self.store = store
         self.session_hours = session_hours
         self.max_failures = max_failures
         self.lockout_seconds = lockout_seconds
         self.code_ttl = code_ttl
         self.cooldown = cooldown
-        self.per_phone = per_phone
+        self.per_address = per_address
         self.per_ip = per_ip
         self._failures: dict[str, tuple[int, float]] = {}
 
     async def setup(self):
         await self.store.db.users.create_index("username", unique=True)
-        # One account per number. Sparse, because accounts made with a password
-        # have no phone at all and must not collide with each other on null.
+        # One account per identifier. Sparse, because accounts made with a
+        # password have neither field and must not collide with each other on
+        # null. Both doors share the same users collection.
         await self.store.db.users.create_index("phone", unique=True, sparse=True)
+        await self.store.db.users.create_index("email", unique=True, sparse=True)
         await self.store.db.auth_sessions.create_index("token_hash", unique=True)
         await self.store.db.auth_sessions.create_index("user_id")
         # One counter row per visitor per day; the unique index is what makes the
         # increment safe when two tabs of the same visitor start a turn together.
         await self.store.db.guest_usage.create_index([("id", 1), ("day", 1)], unique=True)
-        await self.store.db.sms_codes.create_index([("phone", 1), ("purpose", 1),
-                                                    ("created_at", -1)])
+        # One table for every channel: `identifier` is an email address or a
+        # phone number, and `channel` keeps a code issued for one from being
+        # accepted by the other.
+        await self.store.db.verification_codes.create_index(
+            [("identifier", 1), ("channel", 1), ("purpose", 1), ("created_at", -1)])
         # A real Date rather than the ISO string used everywhere else, because
         # this is the one column Mongo itself has to expire.
-        await self.store.db.sms_codes.create_index("expire_at", expireAfterSeconds=0)
-        await self.store.db.sms_sends.create_index([("id", 1), ("day", 1)], unique=True)
+        await self.store.db.verification_codes.create_index("expire_at", expireAfterSeconds=0)
+        for collection in ("sms_sends", "mail_sends"):
+            await self.store.db[collection].create_index([("id", 1), ("day", 1)], unique=True)
 
     # ---------------------------------------------------------------- accounts
     async def create_user(self, username: str, password: str) -> dict:
@@ -205,6 +212,9 @@ class AuthService:
 
     async def user_by_phone(self, phone: str):
         return await self.store.db.users.find_one({"phone": phone}, {"_id": 0})
+
+    async def user_by_email(self, address: str):
+        return await self.store.db.users.find_one({"email": address}, {"_id": 0})
 
     def _locked(self, username: str) -> bool:
         attempts, since = self._failures.get(username, (0, 0.0))
@@ -285,81 +295,152 @@ class AuthService:
         await self.store.db.users.update_one({"id": user_id}, {"$set": {"phone": number}})
         return {**(await self.user_by_id(user_id) or {}), "phone": number}
 
+    # ------------------------------------------------------------ email accounts
+    async def create_email_user(self, address: str) -> dict:
+        """Turn a verified address into an account.
+
+        The username is derived rather than chosen: this door has no field to
+        type one, and a digest keeps the local part out of a column that other
+        accounts could otherwise enumerate by guessing.
+        """
+        existing = await self.user_by_email(address)
+        if existing:
+            return existing
+        base = "e" + hashlib.sha256(address.encode()).hexdigest()[:12]
+        for attempt in range(3):
+            username = base if attempt == 0 else f"{base}{secrets.token_hex(2)}"
+            user = {"id": new_id(), "username": username, "email": address,
+                    "display_name": email_address.mask(address), "created_at": _iso(_now())}
+            try:
+                await self.store.db.users.insert_one(dict(user))
+            except DuplicateKeyError:
+                existing = await self.user_by_email(address)
+                if existing:
+                    return existing
+                continue
+            logger.info("Registered %s", email_address.mask(address))
+            return user
+        raise SmsCodeError("email_taken")
+
+    async def bind_email(self, user_id: str, address: str) -> dict:
+        existing = await self.user_by_email(address)
+        if existing and existing["id"] != user_id:
+            raise SmsCodeError("email_taken")
+        # As with phone: binding an address is not a rename, so display_name is
+        # left exactly as the owner set it.
+        await self.store.db.users.update_one({"id": user_id}, {"$set": {"email": address}})
+        return {**(await self.user_by_id(user_id) or {}), "email": address}
+
     # ---------------------------------------------------------- verification codes
-    async def issue_code(self, raw_phone: str, purpose: str, ip: str, sender) -> dict:
+    @staticmethod
+    def _normalize(raw: str, channel: str) -> str:
+        """One identity shape per channel; nothing downstream sees the raw text."""
+        if channel == "email":
+            return email_address.normalize(raw)
+        return phone_number.normalize(raw)
+
+    @staticmethod
+    def _mask(identifier: str, channel: str) -> str:
+        if channel == "email":
+            return email_address.mask(identifier)
+        return phone_number.mask(identifier)
+
+    @staticmethod
+    def _send_collection(channel: str) -> str:
+        """Separate daily budgets: mail and SMS are billed by different people."""
+        return "mail_sends" if channel == "email" else "sms_sends"
+
+    async def issue_code(self, raw_identifier: str, purpose: str, ip: str, sender,
+                         channel: str = "email") -> dict:
         """Send one code; return what the interface needs to start a countdown.
 
         The row is written before the message goes out, so two requests racing on
-        the same number cannot both pass the cooldown check. A failed send takes
+        the same address cannot both pass the cooldown check. A failed send takes
         the row and the counters back, otherwise a provider outage would lock a
         person out of trying again.
+
+        `channel` decides only how the identifier is normalised, how the message
+        travels and which budget is charged; the lifecycle is shared, because a
+        code that expires, burns once and dies after five wrong answers should
+        not behave differently depending on the wire.
         """
-        number = phone_number.normalize(raw_phone)
+        identifier = self._normalize(raw_identifier, channel)
         now = _now()
-        previous = await self.store.db.sms_codes.find_one(
-            {"phone": number, "purpose": purpose}, {"created_at": 1},
-            sort=[("created_at", -1)])
+        previous = await self.store.db.verification_codes.find_one(
+            {"identifier": identifier, "channel": channel, "purpose": purpose},
+            {"created_at": 1}, sort=[("created_at", -1)])
         if previous:
             elapsed = (now - datetime.fromisoformat(previous["created_at"])).total_seconds()
             if elapsed < self.cooldown:
                 raise SmsCodeError("cooldown", math.ceil(self.cooldown - elapsed))
         day = _iso(now)[:10]
-        await self._spend_send(number, day, self.per_phone)
+        collection = self._send_collection(channel)
+        await self._spend_send(collection, identifier, day, self.per_address)
         if ip:
-            await self._spend_send(f"ip:{ip}", day, self.per_ip)
+            await self._spend_send(collection, f"ip:{ip}", day, self.per_ip)
 
         code = f"{secrets.randbelow(1_000_000):06d}"
         salt = secrets.token_bytes(16)
-        row = {"id": new_id(), "phone": number, "purpose": purpose,
-               "salt": _b64(salt),
+        row = {"id": new_id(), "identifier": identifier, "channel": channel,
+               "purpose": purpose, "salt": _b64(salt),
                # Not a password: a six-digit secret is guessable offline whatever
                # we do. The salt is here so a database dump or a log line does
                # not hand somebody a code that is still valid.
                "digest": hashlib.sha256(salt + code.encode()).hexdigest(),
                "attempts": 0, "sent_from": ip, "created_at": _iso(now),
                "expire_at": now + timedelta(seconds=self.code_ttl)}
-        await self.store.db.sms_codes.insert_one(dict(row))
+        await self.store.db.verification_codes.insert_one(dict(row))
         try:
-            await sender.send(SmsMessage(phone=number, code=code,
-                                         minutes=max(1, self.code_ttl // 60)))
-        except SmsError as exc:
-            await self.store.db.sms_codes.delete_one({"id": row["id"]})
-            await self._bump("sms_sends", number, day, -1)
+            await sender.deliver(identifier, code, max(1, self.code_ttl // 60))
+        except DeliveryError as exc:
+            await self.store.db.verification_codes.delete_one({"id": row["id"]})
+            await self._bump(collection, identifier, day, -1)
             if ip:
-                await self._bump("sms_sends", f"ip:{ip}", day, -1)
-            logger.error("No SMS reached %s: %s", phone_number.mask(number), exc)
+                await self._bump(collection, f"ip:{ip}", day, -1)
+            logger.error("No %s code reached %s: %s", channel,
+                         self._mask(identifier, channel), exc)
             raise SmsCodeError("send_failed") from None
         return {"expiresIn": self.code_ttl, "cooldown": self.cooldown, "code": code}
 
-    async def verify_code(self, raw_phone: str, purpose: str, code: str) -> str:
-        """Check a code and burn it. Returns the normalised number on success.
+    async def verify_code(self, raw_identifier: str, purpose: str, code: str,
+                          channel: str = "email") -> str:
+        """Check a code and burn it. Returns the normalised identifier on success.
 
         Every wrong answer is counted, and the code dies with the attempt that
         exceeds the ceiling: a six-digit secret survives a few seconds of
         scripted guessing, not five minutes of it.
         """
-        number = phone_number.normalize(raw_phone)
-        row = await self.store.db.sms_codes.find_one(
-            {"phone": number, "purpose": purpose}, sort=[("created_at", -1)])
-        if row is None:
+        identifier = self._normalize(raw_identifier, channel)
+        # Only a code that has not been used can match. Filtering here rather
+        # than after the read matters when two codes were issued in the same
+        # second: `created_at` cannot order them, but "consumed" can.
+        row = await self.store.db.verification_codes.find_one(
+            {"identifier": identifier, "channel": channel, "purpose": purpose,
+             "consumed_at": {"$exists": False}},
+            sort=[("created_at", -1)])
+        if row is None or row.get("consumed_at"):
             raise SmsCodeError("expired")
         if _expired(row.get("expire_at")) or int(row.get("attempts", 0)) >= CODE_ATTEMPTS:
-            await self.store.db.sms_codes.delete_one({"_id": row["_id"]})
+            await self.store.db.verification_codes.delete_one({"_id": row["_id"]})
             raise SmsCodeError("expired" if _expired(row.get("expire_at")) else "too_many")
         if not _code_matches(row, code):
-            updated = await self.store.db.sms_codes.find_one_and_update(
+            updated = await self.store.db.verification_codes.find_one_and_update(
                 {"_id": row["_id"]}, {"$inc": {"attempts": 1}},
                 return_document=ReturnDocument.AFTER)
             if int((updated or {}).get("attempts", 0)) >= CODE_ATTEMPTS:
-                await self.store.db.sms_codes.delete_one({"_id": row["_id"]})
+                await self.store.db.verification_codes.delete_one({"_id": row["_id"]})
                 raise SmsCodeError("too_many")
             raise SmsCodeError("invalid")
-        await self.store.db.sms_codes.delete_one({"_id": row["_id"]})
-        return number
+        # Consumed, not deleted: the row is also the cooldown record, so removing
+        # it would let a successful sign-in immediately ask for another message.
+        # It leaves through the TTL index when the code would have expired.
+        await self.store.db.verification_codes.update_one(
+            {"_id": row["_id"]}, {"$set": {"consumed_at": _iso(_now())}})
+        return identifier
 
-    async def _spend_send(self, key: str, day: str, limit: int):
-        if await self._bump("sms_sends", key, day) > limit:
-            await self._bump("sms_sends", key, day, -1)
+    async def _spend_send(self, collection: str, key: str, day: str, limit: int):
+        if await self._bump(collection, key, day) > limit:
+            await self._bump(collection, key, day, -1)
             now = _now()
             midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0,
                                                          microsecond=0)

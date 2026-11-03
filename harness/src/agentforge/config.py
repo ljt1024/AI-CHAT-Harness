@@ -66,10 +66,10 @@ class Settings(BaseSettings):
     # so keeping them indefinitely would just hoard the operator's database.
     guest_retention_hours: float = Field(default=72, gt=0, le=720)
 
-    # Sign-up and sign-in by phone. The phone is what makes an account
-    # recoverable and a person identifiable, so it is the default door; the
-    # username/password pair stays for the account `bootstrap()` creates and for
-    # anyone who bound one before.
+    # Sign-up and sign-in by phone. Mail is the default door (see MAIL_* below);
+    # SMS stays available for deployments that prefer it, and both build on the
+    # same verification-code policy. The username/password pair stays for the
+    # account `bootstrap()` creates and for anyone who bound one before.
     sms_provider: str = "console"
     sms_secret_id: SecretStr = SecretStr("")
     sms_secret_key: SecretStr = SecretStr("")
@@ -83,15 +83,35 @@ class Settings(BaseSettings):
     # Echo the code in the API answer while on the console channel. Development
     # only: it turns the endpoint into a way to log in as any phone number.
     sms_debug_echo: bool = False
-    sms_code_ttl: int = Field(default=300, ge=60, le=1800)
-    # A second message to the same number within this window is refused; without
-    # it a loop of requests becomes a way to spend the operator's SMS budget and
-    # to annoy one person.
-    sms_cooldown: int = Field(default=60, ge=0, le=3600)
-    sms_daily_per_phone: int = Field(default=10, ge=1, le=100)
-    sms_daily_per_ip: int = Field(default=30, ge=1, le=1000)
-    # Whether an unknown phone becomes a new account. Off means accounts are
-    # created by an operator only, and the endpoint says the number is unknown.
+
+    # Verification-code policy, shared by every channel. Kept separate from the
+    # channel settings so adding mail did not have to clone the budget fields or
+    # leave them under a name that says "sms" while they govern email too.
+    verify_code_ttl: int = Field(default=300, ge=60, le=1800)
+    # A second message to the same address within this window is refused;
+    # without it a loop of requests becomes a way to spend the operator's
+    # message budget and to annoy one person.
+    verify_cooldown: int = Field(default=60, ge=0, le=3600)
+    verify_daily_per_address: int = Field(default=10, ge=1, le=100)
+    verify_daily_per_ip: int = Field(default=30, ge=1, le=1000)
+
+    # Sign-up and sign-in by email. An address needs no template review to start
+    # using and is reachable on a development machine through a local SMTP sink,
+    # so this is the default door; SMS stays available behind it.
+    mail_provider: str = "console"
+    mail_debug_echo: bool = False
+    smtp_host: str = ""
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_user: str = ""
+    smtp_password: SecretStr = SecretStr("")
+    # Defaults to SMTP_USER, which is what most providers require anyway.
+    smtp_from: str = ""
+    # starttls (587), ssl (465), none (a local sink such as Mailpit).
+    smtp_tls: str = "starttls"
+    smtp_timeout: float = Field(default=10, gt=0, le=60)
+
+    # Whether an unknown address becomes a new account. Off means accounts are
+    # created by an operator only, and the endpoint says the address is unknown.
     signup_open: bool = True
 
     @field_validator("sandbox_image")

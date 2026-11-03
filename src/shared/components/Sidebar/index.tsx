@@ -7,7 +7,7 @@ import EditTitDialog from './components/EditTitDialog'
 import DeleteDialog from './components/DeleteDialog'
 import { useChat, useChatDispatch } from '@/app/providers/ChatContext'
 import { useLanguage } from '@/app/providers/LanguageContext'
-import PhoneBindDialog from '@/features/auth/PhoneBindDialog'
+import EmailBindDialog from '@/features/auth/EmailBindDialog'
 import { getSelectId, storageSelectId, type CovIdListItem } from '@/shared/utils/localMessages'
 import './index.css'
 
@@ -36,7 +36,7 @@ export default function Sidebar({ isLoading, account }: {
   isLoading: boolean;
   // `name` present means signed in; `turnsLeft` present means the anonymous
   // trial is running. Both live in one slot because only one is ever true.
-  account?: { name?: string; turnsLeft?: number; phone?: string;
+  account?: { name?: string; turnsLeft?: number; email?: string;
     onSignOut?: () => void; onSignIn?: () => void };
 }) {
   const { t, dateLocale } = useLanguage()
@@ -147,7 +147,7 @@ export default function Sidebar({ isLoading, account }: {
                 buttons: there is one thing to do here besides signing out. */}
             <Popover placement="top-start" trigger="click" content={<div className="sidebar-operations">
               <button type="button" onClick={() => setBinding(true)}>
-                {account.phone ? t('auth.bound', { phone: account.phone }) : t('auth.bindPhone')}
+                {account.email ? t('auth.bound', { email: account.email }) : t('auth.bindEmail')}
               </button>
             </div>}>
               <button type="button" className="sidebar-footer-label sidebar-account-name"
@@ -171,7 +171,7 @@ export default function Sidebar({ isLoading, account }: {
     </aside>
     {editing && <EditTitDialog isConfirmDialogOpen setIsConfirmDialogOpen={value => { if (!value) setEditing(null) }} covItem={editing} />}
     {deleting && <DeleteDialog isShowDeleteDialog setIsShowDeleteDialog={value => { if (!value) setDeleting(null) }} covItem={deleting} />}
-    {binding && <PhoneBindDialog onClose={() => setBinding(false)} />}
+    {binding && <EmailBindDialog onClose={() => setBinding(false)} />}
     <ChatRecordDialog isShowRecordDialog={records} setIsShowRecordDialog={setRecords} />
   </>
 }

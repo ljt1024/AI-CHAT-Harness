@@ -21,9 +21,10 @@ PHONE = "13800138000"
 async def make_app(tmp_path, **overrides):
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
     settings = Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
-                        sandbox_warm_size=0, **{"sms_debug_echo": True, "sms_cooldown": 0,
-                                                "sms_daily_per_phone": 50,
-                                                "sms_daily_per_ip": 200, **overrides})
+                        sandbox_warm_size=0, **{"sms_debug_echo": True,
+                                                "verify_cooldown": 0,
+                                                "verify_daily_per_address": 50,
+                                                "verify_daily_per_ip": 200, **overrides})
     app = create_app(settings, store, ModelGateway())
     return app, store
 
@@ -147,7 +148,7 @@ async def test_closing_signup_stops_new_numbers_at_the_door(tmp_path):
 
 
 async def test_the_cooldown_answers_with_a_countdown(tmp_path):
-    app, _ = await make_app(tmp_path, sms_cooldown=60)
+    app, _ = await make_app(tmp_path, verify_cooldown=60)
     async with app.router.lifespan_context(app):
         async with anonymous(app) as client:
             assert (await request_code(client)).status_code == 200

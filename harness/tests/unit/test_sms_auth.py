@@ -1,9 +1,12 @@
-"""Verification codes: what one costs, how long it lives, and when it dies.
+"""Verification codes over SMS: what one costs, how long it lives, when it dies.
 
 The interesting cases are the refusals. A code that can be requested without
 limit is a way to spend the operator's SMS budget; one that survives five wrong
 guesses is a six-digit secret with a five-minute life and a script on the other
 end; one that is not consumed lets a leaked message log in twice.
+
+The lifecycle itself is shared with email (`test_mail_auth.py` exercises the
+other channel); these tests pin the SMS-specific normalisation and budget.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -29,6 +32,9 @@ class FakeSender:
             raise SmsError("provider said no")
         self.sent.append(message)
 
+    async def deliver(self, to: str, code: str, minutes: int) -> None:
+        await self.send(SmsMessage(phone=to, code=code, minutes=minutes))
+
 
 def make_service(**kwargs):
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
@@ -36,91 +42,98 @@ def make_service(**kwargs):
     return AuthService(store, **{**defaults, **kwargs}), store
 
 
+async def issue(service, number, sender, ip="", purpose="login"):
+    return await service.issue_code(number, purpose, ip, sender, channel="sms")
+
+
+async def verify(service, number, code, purpose="login"):
+    return await service.verify_code(number, purpose, code, channel="sms")
+
+
 async def test_a_code_is_correct_once():
     service, _ = make_service()
     sender = FakeSender()
-    sent = await service.issue_code("13800138000", "login", "1.2.3.4", sender)
+    sent = await issue(service, "13800138000", sender)
 
     assert sender.sent[0].phone == "+8613800138000"
     assert sender.sent[0].code == sent["code"] and len(sent["code"]) == 6
-    assert await service.verify_code("+86 138-0013-8000", "login", sent["code"]) \
-        == "+8613800138000"
+    assert await verify(service, "+86 138-0013-8000", sent["code"]) == "+8613800138000"
     with pytest.raises(SmsCodeError) as second:
-        await service.verify_code("13800138000", "login", sent["code"])
+        await verify(service, "13800138000", sent["code"])
     assert second.value.reason == "expired", "a used code leaves nothing to check against"
 
 
 async def test_five_wrong_guesses_burn_the_code():
     service, store = make_service()
     sender = FakeSender()
-    sent = await service.issue_code("13800138000", "login", "", sender)
+    sent = await issue(service, "13800138000", sender)
 
     for _ in range(4):
         with pytest.raises(SmsCodeError) as wrong:
-            await service.verify_code("13800138000", "login", "000000")
+            await verify(service, "13800138000", "000000")
         assert wrong.value.reason == "invalid"
     with pytest.raises(SmsCodeError) as burnt:
-        await service.verify_code("13800138000", "login", "000000")
+        await verify(service, "13800138000", "000000")
     assert burnt.value.reason == "too_many"
-    assert await store.db.sms_codes.count_documents({}) == 0
+    assert await store.db.verification_codes.count_documents({}) == 0
     # Even the right code is gone now: the point is to make guessing expensive.
     with pytest.raises(SmsCodeError):
-        await service.verify_code("13800138000", "login", sent["code"])
+        await verify(service, "13800138000", sent["code"])
 
 
 async def test_a_code_stops_working_when_it_expires():
     service, store = make_service()
     sender = FakeSender()
-    sent = await service.issue_code("13800138000", "login", "", sender)
-    await store.db.sms_codes.update_one({}, {"$set": {
+    sent = await issue(service, "13800138000", sender)
+    await store.db.verification_codes.update_one({}, {"$set": {
         "expire_at": datetime.now(timezone.utc) - timedelta(seconds=1)}})
     with pytest.raises(SmsCodeError) as expired:
-        await service.verify_code("13800138000", "login", sent["code"])
+        await verify(service, "13800138000", sent["code"])
     assert expired.value.reason == "expired"
 
 
 async def test_a_second_message_waits_for_the_cooldown():
     service, _ = make_service(cooldown=60)
     sender = FakeSender()
-    await service.issue_code("13800138000", "login", "", sender)
+    await issue(service, "13800138000", sender)
     with pytest.raises(SmsCodeError) as too_soon:
-        await service.issue_code("13800138000", "login", "", sender)
+        await issue(service, "13800138000", sender)
     assert too_soon.value.reason == "cooldown"
     assert 0 < too_soon.value.retry_after <= 60
     assert len(sender.sent) == 1
 
 
 async def test_one_number_cannot_be_messaged_all_day():
-    service, _ = make_service(per_phone=2, per_ip=99)
+    service, _ = make_service(per_address=2, per_ip=99)
     sender = FakeSender()
     for _ in range(2):
-        await service.issue_code("13800138000", "login", "", sender)
+        await issue(service, "13800138000", sender)
     with pytest.raises(SmsCodeError) as capped:
-        await service.issue_code("13800138000", "login", "", sender)
+        await issue(service, "13800138000", sender)
     assert capped.value.reason == "daily_limit"
     assert capped.value.retry_after > 0
 
 
 async def test_one_address_cannot_walk_through_every_number():
-    service, _ = make_service(per_ip=2, per_phone=99)
+    service, _ = make_service(per_ip=2, per_address=99)
     sender = FakeSender()
     for suffix in ("000", "001"):
-        await service.issue_code(f"13800138{suffix}", "login", "9.9.9.9", sender)
+        await issue(service, f"13800138{suffix}", sender, ip="9.9.9.9")
     with pytest.raises(SmsCodeError) as capped:
-        await service.issue_code("13800138002", "login", "9.9.9.9", sender)
+        await issue(service, "13800138002", sender, ip="9.9.9.9")
     assert capped.value.reason == "daily_limit"
 
 
 async def test_a_failed_send_leaves_no_trace_and_no_wait():
-    service, store = make_service(cooldown=60, per_phone=1)
+    service, store = make_service(cooldown=60, per_address=1)
     with pytest.raises(SmsCodeError) as refused:
-        await service.issue_code("13800138000", "login", "", FakeSender(fail=True))
+        await issue(service, "13800138000", FakeSender(fail=True))
     assert refused.value.reason == "send_failed"
-    assert await store.db.sms_codes.count_documents({}) == 0
+    assert await store.db.verification_codes.count_documents({}) == 0
     assert await store.db.sms_sends.count_documents({"count": {"$gt": 0}}) == 0
     # The budget and the cooldown both handed back, so a provider outage does
     # not lock this person out for a minute or for the day.
-    await service.issue_code("13800138000", "login", "", FakeSender())
+    await issue(service, "13800138000", FakeSender())
 
 
 async def test_a_phone_signup_creates_exactly_one_account():
