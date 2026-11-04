@@ -110,7 +110,7 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 
 - **MongoDB**：`docker run mongo:7`，只绑 `127.0.0.1:27017`，`--wiredTigerCacheSizeGB 0.25` 限内存。应用账号建在 `agentforge` 库里，连接串的认证库是 `authSource=agentforge` 而不是 `admin`——这是最常见的连不上原因。
 - **后端**：专用系统用户跑 venv + uvicorn（`127.0.0.1:8100`，单 worker），systemd 单元 `agentforge.service`（`Restart=always`），日志 `/var/log/agentforge/`。用户需在 `docker` 组里才能管理沙箱容器。
-- **前端**：`npm run build` 产物放 `/var/www/agentforge`，nginx 同站监听 `80` / `8099`；`/api`、`/ws` 反代到后端，SSE 必须 `proxy_buffering off`，`/health` 单独代理。**请求体上限要与 `UPLOAD_MAX_BYTES` 对齐**：nginx 默认只收 1 MB，文件库（ADR-0020）的上传会在到后端之前就被 413 挡掉，所以 `/api` 的 location 里需要 `client_max_body_size 26m;`（略大于 25 MB 的 `UPLOAD_MAX_BYTES`，留给 multipart 头部）。
+- **前端**：`npm run build` 产物放 `/var/www/agentforge`，nginx 同站监听 `80` / `8099`；`/api`、`/ws` 反代到后端，SSE 必须 `proxy_buffering off`，`/health` 单独代理。**请求体上限要与 `UPLOAD_MAX_BYTES` 对齐**：nginx 默认只收 1 MB，文件库（ADR-0020）的上传会在到后端之前就被 413 挡掉，所以 `/api` 的 location 里需要 `client_max_body_size 26m;`（略大于 25 MB 的 `UPLOAD_MAX_BYTES`，留给 multipart 头部）。**`.mjs` 要有自己的 Content-Type**：Vite 把 pdf.js 的 worker 输出成 `.mjs`，nginx 的默认类型表里没有它，会退回 `application/octet-stream`，浏览器因此拒绝动态 `import()` 该模块，PDF 预览直接报 `Setting up fake worker failed`。站点配置里加一段 `location ~ \.mjs$ { types { } default_type application/javascript; ... }` 即可（本仓库的线上配置已经这样写）。
 - **沙箱镜像**：`docker build -t agentforge/python-docs:3.12 harness/docker/sandbox-docs`（国内构建给 pip 换内网源），`.env` 里 `SANDBOX_IMAGE=agentforge/python-docs:3.12`、`SANDBOX_WARM_SIZE=0`（小内存机器不预热）。
 - **前端不引用任何外网资源**：`@import` Google Fonts 已移除——样式表在不可达网络下会永远 pending，而 deferred module 脚本要等样式表加载完才执行，结果就是整站白屏且无任何报错。字体走 `:root` 里的系统栈（PingFang SC / Noto Sans SC）。
 
@@ -225,7 +225,7 @@ curl -s localhost:8000/api/mcp/servers/import -H 'content-type: application/json
 
 需要确认的操作会挂起执行，前端在**输入框上方**展示审批卡（可滚动查看参数、允许 / 拒绝 / 停止），审批结果按轮次折叠进会话记录，便于回溯。超时一律拒绝（见 [ADR-0008](docs/adr/0008-sandbox-runtime-approval-ui.md)）。
 
-远程（MCP）工具的审批卡多一个**「本会话都允许」**：放行只作用于当前会话、只存在内存里，会话删除或重置即失效，落盘不做、跨会话不继承。宿主 shell 与技能安装不给这个按钮——它们的影响不会随会话结束而消失。
+审批卡多一个**「本会话都允许」**：放行只作用于当前会话、只按**工具名**记，不记参数，只存在内存里，会话删除或进程重启即失效，落盘不做、跨会话不继承。它对**所有需要确认的工具**都可用——原先只给远程 MCP 工具，代价是一个任务里同一句 `run_command` 被连续批准二十次，人会开始不看内容就点，比多一次确认更危险。策略层的拒绝不受影响：拒绝在查「已记住」之前就判定了，所以被策略禁止的调用不会因为记住而被放行。
 
 ### 产物与预览
 
@@ -236,6 +236,8 @@ curl -s localhost:8000/api/mcp/servers/import -H 'content-type: application/json
 - **Excel / PPT / Word** 不要求浏览器能打开 Office：后端用标准库读出内容——表格、每页幻灯片的标题与要点、文档段落——浏览器按这份只读视图预览，原文件照常下载。
 
 单个文件 2 MB、每轮 20 个条目（图片至多 6 张，免得成批图表把真正的交付物挤出名单）；内容未变的文件不重复入库，只在新的消息下再挂一张卡。凡是写文件或跑过命令的轮次结束时都会扫描工作区（见 [ADR-0012](docs/adr/0012-workspace-writes-and-html-delivery.md)）。
+
+**文件名本身就是下载入口**：产物卡片上的名字是链接，回答正文里提到的文件名也是——模型写 `report.xlsx` 还是 `` `report.xlsx` `` 都能点。只有**这一轮真实产出的名字**才会被链接，正文里提到的别的文件名保持纯文本，免得把一句说明变成坏链接；代码块内不替换（那里文件名是内容本身）。
 
 ### 前端流式体验
 
