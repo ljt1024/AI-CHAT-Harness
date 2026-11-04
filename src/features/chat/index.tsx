@@ -123,13 +123,16 @@ const ChatAI: React.FC = () => {
   // A reload drops the in-memory reading but not the run, so ask the backend for the
   // one it committed; otherwise the gauge stays empty until the next message.
   useEffect(() => {
-    if (!activeSessionId || !messages.length || measuredSessionId === activeSessionId) return;
+    // While a run is in flight the gauge is fed by the stream's `memory` events, and
+    // the first turn's session row is not committed yet — asking now would answer 404
+    // and paint a red line in a console that has nothing wrong with it.
+    if (!activeSessionId || !messages.length || isLoading || measuredSessionId === activeSessionId) return;
     const controller = new AbortController();
     void fetchSessionContext(activeSessionId, controller.signal).then(saved => {
       if (saved) setContextUsage({ sessionId: activeSessionId, ...saved });
     }).catch(() => undefined);
     return () => controller.abort();
-  }, [activeSessionId, messages.length, measuredSessionId]);
+  }, [activeSessionId, messages.length, isLoading, measuredSessionId]);
   const hasSelectedConversation = Boolean(getSelectId())
   const isWelcomeConversation = messages.length === 0 && (isNewConversation || !hasSelectedConversation)
   const selectedConversation = useMemo(() => {
