@@ -353,6 +353,7 @@
   "preview.pdfNote": "原始 PDF · 可逐页查看",
   "preview.previous": "上一页",
   "preview.previousPage": "上一页",
+  "preview.readerError": "PDF 阅读器没能加载，文件本身没问题。可以重新加载再试，或直接下载查看。",
   "preview.retry": "重新加载",
   "preview.rowCount": "{count} 行",
   "preview.rowCount_one": "{count} 行",

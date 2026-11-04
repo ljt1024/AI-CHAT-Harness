@@ -10,6 +10,17 @@ import { getFileDownloadUrl } from '@/shared/utils/fileDownloads';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import './ArtifactPreviewPanel.css';
 
+// The pdf.js worker is the one asset whose URL does not change when only the
+// server's headers change, and /assets is served `immutable` for 30 days — so a
+// client that once fetched this file as `application/octet-stream` keeps that
+// copy even across a reload, and importing it stays broken until the cache
+// expires. The query is the way out: bump it whenever a fix must reach clients
+// that already hold a bad response, and it becomes a URL nobody has fetched.
+const WORKER_SRC = `${workerUrl}?rev=2`;
+
+/** A module that will not load is a broken reader, not a broken file. */
+const readerFailure = (message: string) => /worker|dynamically imported|module/i.test(message);
+
 export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }: {
   artifact: AgentArtifact;
   artifacts: AgentArtifact[];
@@ -125,7 +136,7 @@ export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }:
     if (previewId) {
       void import('pdfjs-dist').then(async pdfjs => {
         if (cancelled) return;
-        pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
+        pdfjs.GlobalWorkerOptions.workerSrc = WORKER_SRC;
         loadingTask = pdfjs.getDocument({ url: getFileDownloadUrl(previewId) });
         const loaded = await loadingTask.promise;
         if (!cancelled) setDocument(loaded);
@@ -191,7 +202,7 @@ export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }:
         : kind === 'slides' ? <SlidePreview slides={fileContent.slides || []} />
         : <DocumentPreview paragraphs={fileContent.paragraphs || []} />
       ) : kind === 'pdf' ? (error ?
-          <div className="artifact-preview-error" role="alert"><p>{t('preview.loadError')}</p><small>{error}</small><button onClick={() => setRetry(value => value + 1)} type="button">{t('preview.retry')}</button></div> : <>
+          <div className="artifact-preview-error" role="alert"><p>{readerFailure(error) ? t('preview.readerError') : t('preview.loadError')}</p><small>{error}</small><button onClick={() => setRetry(value => value + 1)} type="button">{t('preview.retry')}</button></div> : <>
             {rendering && <p className="artifact-preview-loading" role="status">{t('preview.loadingPage')}</p>}
             <canvas ref={canvasRef} style={{ visibility: rendering ? 'hidden' : 'visible' }} role="img" aria-label={t('preview.pageLabel', { name: artifact.fileName, page })} />
           </>)

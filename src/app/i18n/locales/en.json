@@ -353,6 +353,7 @@
   "preview.pdfNote": "Original PDF · Browse pages",
   "preview.previous": "Previous",
   "preview.previousPage": "Previous page",
+  "preview.readerError": "The PDF reader could not load — the file itself is fine. Reload to try again, or download it.",
   "preview.retry": "Retry",
   "preview.rowCount": "{count} rows",
   "preview.rowCount_one": "{count} row",
