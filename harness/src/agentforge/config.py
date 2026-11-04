@@ -9,6 +9,12 @@ from agentforge.models import DEFAULT_SANDBOX_IMAGE, SandboxPolicy
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=("../.env", ".env"), extra="ignore")
     deepseek_api_key: SecretStr = SecretStr("")
+    # A remote model fails transiently often enough that one 429 or 502 should
+    # not end the user's turn. Retries stop at the first streamed chunk, so the
+    # budget buys a second chance rather than a duplicated answer.
+    model_retries: int = Field(default=2, ge=0, le=5)
+    model_retry_backoff: float = Field(default=1.0, ge=0, le=30)
+    model_retry_max_backoff: float = Field(default=8.0, ge=0, le=60)
     mongodb_uri: str = "mongodb://localhost:27017"
     agentforge_db: str = "agentforge"
     mcp_server_url: str = "http://localhost:9000/mcp"

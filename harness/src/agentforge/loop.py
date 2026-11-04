@@ -5,6 +5,8 @@ import logging
 import time
 from dataclasses import dataclass, field
 
+import httpx
+
 from agentforge.context import DEFAULT_WINDOW, estimate_tokens, history_boundary
 from agentforge.events import EventBus
 from agentforge.gateway.registry import ModelGateway
@@ -304,7 +306,9 @@ class Runtime:
                 await self.store.put("traces", {"id": trace_id, "sessionId": session_id,
                     "agent_id": agent.id, "status": "cancelled" if isinstance(exc, asyncio.CancelledError) else "error",
                     "cost": cost.model_dump(), "error": type(exc).__name__,
-                    "error_code": exc.code if isinstance(exc, ModelOutputError) else "run_failed"})
+                    "error_code": exc.code if isinstance(exc, ModelOutputError)
+                    else "model_unavailable" if isinstance(exc, (httpx.HTTPStatusError, httpx.TransportError))
+                    else "run_failed"})
                 current = await self.store.get("sessions", session_id)
                 if current:
                     await self.store.put("sessions", {**current, "status": "error"})
@@ -313,6 +317,27 @@ class Runtime:
                     message = ("模型返回了不完整或无效的输出，已停止本次生成。本次不完整响应中的工具调用均未执行。请将任务拆分为较小文件后重试。"
                                if chinese else "The model returned incomplete or invalid output. No tools "
                                "from the incomplete response were executed. Retry with smaller files.")
+                elif isinstance(exc, httpx.HTTPStatusError):
+                    # Retries already happened in the gateway, so this is the
+                    # provider refusing after every attempt. Say which, because
+                    # "run failed" sends the operator looking in the wrong place.
+                    status = exc.response.status_code
+                    message = ({
+                        401: "模型服务的 API Key 被拒绝，请检查 DEEPSEEK_API_KEY 后重启。",
+                        402: "模型服务账户余额不足，请充值后重试。",
+                        429: "模型服务限流，已自动重试仍未通过，请稍后再试。",
+                    }.get(status, f"模型服务暂时不可用（HTTP {status}），已自动重试仍未通过，请稍后再试。")
+                        if chinese else {
+                        401: "The model provider rejected the API key. Check DEEPSEEK_API_KEY and restart.",
+                        402: "The model provider balance is insufficient. Top up and retry.",
+                        429: "The model provider is rate limiting; automatic retries did not get through. "
+                             "Try again shortly.",
+                    }.get(status, f"The model provider is unavailable (HTTP {status}) after automatic "
+                                  "retries. Try again shortly."))
+                elif isinstance(exc, httpx.TransportError):
+                    message = ("与模型服务的连接中断，已自动重试仍未恢复，请稍后再试。" if chinese
+                               else "The connection to the model provider dropped and automatic retries "
+                               "did not recover it. Try again shortly.")
                 elif isinstance(exc, ValueError):
                     # The runtime raises these itself, so the text already says what to
                     # do: wrong session, committed turn, no checkpoint to resume from.
@@ -321,7 +346,9 @@ class Runtime:
                     message = ("执行失败，请重试；如仍失败，请提供执行记录编号以便排查。" if chinese
                                else "Run failed. Inspect the server logs and configuration.")
                 await emit("error", message=message,
-                           code=exc.code if isinstance(exc, ModelOutputError) else "run_failed")
+                           code=exc.code if isinstance(exc, ModelOutputError)
+                           else "model_unavailable" if isinstance(exc, (httpx.HTTPStatusError, httpx.TransportError))
+                           else "run_failed")
             raise
         finally:
             self.active.discard(session_id)

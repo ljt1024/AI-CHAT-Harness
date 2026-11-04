@@ -38,6 +38,10 @@ docker compose up -d mongo      # 127.0.0.1:27017，库名 agentforge
 
 ```env
 DEEPSEEK_API_KEY=你的密钥
+# 上游模型自动重试（ADR-0019）：只重试限流/5xx/连接中断，且只在尚未输出任何内容前重试
+MODEL_RETRIES=2
+MODEL_RETRY_BACKOFF=1
+MODEL_RETRY_MAX_BACKOFF=8
 MONGODB_URI=mongodb://localhost:27017
 AGENTFORGE_DB=agentforge
 AGENTFORGE_WORKSPACE=.agentforge/workspaces
@@ -211,6 +215,7 @@ curl -s localhost:8000/api/mcp/servers/import -H 'content-type: application/json
 - **稳定的流式渲染**：已完成的段落按块 memo 渲染，未闭合段落以纯文本增长并带光标，按 ~30fps 合帧；只在用户停留在底部时跟随滚动。
 - **产物预览**：≥1101px 时自动打开；窄视口改为手动点开，避免全屏预览遮住整段会话。
 - **上下文容量环**：输入框右侧常驻一枚环形指示器，显示当前会话已占用上下文占窗口的百分比——70% 起转为提醒色、90% 起转为告警色，与运行时触发压缩的阈值一致。数值取自后端的真实估算，刷新页面从服务端恢复，不会从 0 重新长出来。
+- **失败可重试**：上游限流（`429`）、`5xx` 或连接中断由网关自动重试（`MODEL_RETRIES`，指数退避，认服务商的 `Retry-After`），只在**还没有吐出任何内容**之前重试——已经流出的回答不会被重放成两份（[ADR-0019](docs/adr/0019-model-call-retries.md)）。重试全部失败时，气泡里写明是哪一类失败（限流 / 余额 / 密钥 / 连接中断），并保留一颗「重试」按钮：点一下就会丢掉这条失败回答、用同一条提问重发，不需要重新打字，也不额外消耗一轮访客额度。
 - 中英文双语，明暗主题，Markdown 与代码复制。
 
 ### 人工介入（HITL）
@@ -285,6 +290,7 @@ Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验�
 - 除访客试聊白名单（目录读取、发起对话、应答审批，ADR-0015）外，所有 `/api` 请求都需要登录（`/api/auth/*` 与 `/health` 除外）。管理员账号由 `ADMIN_USER` / `ADMIN_PASSWORD` 在启动时创建；邮箱账号由验证码自助创建（ADR-0018），两者共用同一套会话与归属过滤。手机号端点仍在（ADR-0017），但界面已不提供入口，旧手机号账号需要先绑定邮箱才能继续从界面登录——迁移入口尚未做，见 NOTES Backlog。会话是可撤销的服务端记录，浏览器只持有 HttpOnly Cookie。身份只能来自 Cookie——请求体、工具参数或模型输出都无法指定用户。访客身份同样带 `owner_id`，互相隔离；试聊有每访客与全站每日双重额度。跨用户的资源统一返回 404。
 - **沙箱按「会话」隔离，租约再绑定到账号**：每个会话独占一个容器与一个工作区目录，容器只挂载自己的目录，所以会话之间（含不同账号、不同访客）互不可见。租约现在带 `owner`：拿别人的会话 id 也认领不到那台容器和那批文件，池直接拒绝；`/api/sandbox/exec` 的一次性容器同样按调用者记账；每账号同时最多 `SANDBOX_MAX_PER_OWNER`（默认 4）个沙箱，避免一个人占满整池。工作区目录仍是 `workspaces/sandboxes/<sandbox-id>` 扁平存放——预热容器在认领前就已经挂好了目录，事后搬动会让它继续写进已删除的 inode；隔离靠租约而不是路径（见 [ADR-0016](docs/adr/0016-sandbox-lease-ownership.md)）。T15.A3 剩余的按用户目录、MCP 凭证加密与迁移演练尚未做。
 - 受限工具不等于 Docker 安全边界，真正隔离由沙箱提供。
+- **自动重试不是万能兜底**：只有「一个 token 都还没吐出来」的失败会被重试，所以服务商在回答中途掐断连接时，用户看到的是半截答案加一颗「重试」按钮，而不是自动续写——续写需要重放整轮，代价和语义都不一样（ADR-0019）。重试预算按**每次模型调用**计，不是按轮次计：一个十步的智能体任务最多会重试十次，限流严重时单轮耗时会随之上升。
 - 尚未提供通用联网搜索；命令执行只在**离线** Docker 沙箱内进行，不能访问外网。远程 MCP 是唯一出网路径：它不进沙箱，在宿主网络里、带着服务令牌调用，所以其风险由「远端注解 + 审批」承担，而不是由沙箱承担。
 - 产物预览为净化环境，交互脚本只在下载后的文件中运行。
 
@@ -292,7 +298,7 @@ Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验�
 
 - [实现与验收记录](docs/IMPLEMENTATION.md) · [待办与决策](NOTES.md)
 - [技能与 MCP 能力说明](docs/CAPABILITIES.md)
-- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md)
+- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md) · [0017 手机号注册与短信](docs/adr/0017-phone-signup-and-sms-codes.md) · [0018 邮箱注册与验证码邮件](docs/adr/0018-email-signup-and-smtp-codes.md) · [0019 模型调用重试](docs/adr/0019-model-call-retries.md)
 
 ## 常见问题
 

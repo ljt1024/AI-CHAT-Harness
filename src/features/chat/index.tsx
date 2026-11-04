@@ -505,7 +505,12 @@ const ChatAI: React.FC = () => {
       assistantMessage.reasoningInterrupted = true;
       if (error.name !== 'AbortError') {
         assistantMessage.isError = true;
-        assistantMessage.content += `\n\n${error instanceof Error ? error.message : t('error.request')}`;
+        const failure = error instanceof Error ? error.message : t('error.request');
+        // The bubble starts as a "thinking" placeholder; on a failure that
+        // placeholder is not part of the answer, so it is replaced instead of
+        // being read as the first line of the error.
+        const body = assistantMessage.content === t('chat.loading') ? '' : assistantMessage.content;
+        assistantMessage.content = body.trim() ? `${body}\n\n${failure}` : failure;
       }
       cancelStreamRender();
       streamPendingMessageRef.current = null;

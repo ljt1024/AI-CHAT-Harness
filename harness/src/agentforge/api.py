@@ -216,7 +216,9 @@ def create_app(settings=None, store=None, gateway=None):
     settings = settings or Settings()
     configure()
     store = store if store is not None else MongoDBStore(settings.mongodb_uri, settings.agentforge_db)
-    gateway = gateway or ModelGateway()
+    gateway = gateway or ModelGateway(retries=settings.model_retries,
+                                      backoff=settings.model_retry_backoff,
+                                      max_backoff=settings.model_retry_max_backoff)
     if "deepseek" not in gateway.adapters:
         gateway.register("deepseek", DeepSeekAdapter(settings.deepseek_api_key.get_secret_value()))
     pool = SandboxPool(DockerRunner(settings.agentforge_workspace / "sandboxes"),

@@ -346,6 +346,35 @@
   letter-spacing: 0.2px;
 }
 
+/* A failed answer keeps its own action row: the footer above is hidden on
+   error, which used to take the retry button with it. */
+.failedActions {
+  justify-content: flex-start;
+}
+
+.retryFailed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-color);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s ease, opacity 0.2s ease;
+}
+
+.retryFailed:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.retryFailed:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .userTime {
   text-align: right;
   font-size: 12px;

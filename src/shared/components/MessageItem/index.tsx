@@ -90,6 +90,15 @@ const MessageItem: React.FC<MessageItemProps> = ({
     !attachment.url || !attachment.mimeType?.startsWith('image/')
   ))
 
+  const retryIcon = (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
+      <path d="M3 12a9 9 0 0 1 15.36-6.36L21 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M21 3v5h-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M21 12a9 9 0 0 1-15.36 6.36L3 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M3 21v-5h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+
   return (
     <div
       className={`message ${msg.isBot ? 'bot' : 'user'}`}
@@ -152,6 +161,18 @@ const MessageItem: React.FC<MessageItemProps> = ({
           </div>
 
         </div>
+        {/* A failed turn is exactly when retry matters, so it sits outside the
+            footer that is hidden on error. It is a labelled button rather than
+            the icon used on a finished answer: after a failure the user is
+            looking for a way forward, not a hover target. */}
+        {msg.isBot && msg.isError && !msg.isLoading && onRetry && (
+          <div className='timestamp failedActions'>
+            <button type="button" className='retryFailed' onClick={onRetryHandle} disabled={!canRetry}>
+              {retryIcon}
+              <span>{t('message.retry')}</span>
+            </button>
+          </div>
+        )}
         {!msg.isError && (
           <div className={msg.isBot ? 'timestamp' : 'timestamp userTimestamp'}>
             <div className='footerInfo'>
@@ -179,12 +200,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                 {canRetry && (
                   <Tooltip content={t('message.retry')} placement="bottom">
                     <button type="button" className='retry' aria-label={t('message.retry')} onClick={onRetryHandle}>
-                      <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
-                        <path d="M3 12a9 9 0 0 1 15.36-6.36L21 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                        <path d="M21 3v5h-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                        <path d="M21 12a9 9 0 0 1-15.36 6.36L3 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                        <path d="M3 21v-5h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
+                      {retryIcon}
                     </button>
                   </Tooltip>
                 )}
