@@ -3,6 +3,7 @@
 Date: 2026-11-04
 Status: Accepted
 Supersedes: ADR-0021 (the browser's viewer)
+Refined by: ADR-0023 (the worker's URL, which this one got wrong)
 Related: ADR-0012 (workspace writes and HTML delivery), ADR-0020 (conversation file system)
 
 ## Context

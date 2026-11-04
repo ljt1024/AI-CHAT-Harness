@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
-import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import 'react-pdf/dist/Page/TextLayer.css';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import { getFileViewUrl } from '@/shared/utils/fileDownloads';
 
-// pdf.js parses on a worker thread; the URL has to stay a real asset URL, so the
-// import above only hands us the hashed path Vite emitted for it.
-pdfjs.GlobalWorkerOptions.workerSrc = workerSrc;
+// pdf.js parses on a worker thread. The worker is served from public/pdfjs and
+// not from the hashed asset pipeline, because the asset URL cannot be fixed once
+// it is wrong: its hash follows the file's bytes, and a wrong Content-Type ships
+// the same bytes. Every browser that fetched it holds the bad copy for 30 days
+// (immutable), so the URL has to change when the serving does — the version
+// query is that change, and pdf.js rejects a worker from another version anyway
+// (ADR-0023).
+pdfjs.GlobalWorkerOptions.workerSrc = `/pdfjs/pdf.worker.min.mjs?v=${__PDFJS_VERSION__}`;
 
 // A CJK face the document never embedded (Han reports are usually written with
 // STSong-Light) is a CID font: without the Adobe CMap tables pdf.js maps every
