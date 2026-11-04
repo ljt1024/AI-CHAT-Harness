@@ -1,12 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { DocumentPreview, DraftContent, HtmlPreview, SheetPreview, SlidePreview,
   type ParagraphPayload, type SheetPayload, type SlidePayload } from './LiveArtifactContent';
 import { downloadAgentArtifact } from '../api';
 import { formatLabel, previewKind } from '../preview';
 import type { AgentArtifact } from '../types';
-import { getFileDownloadUrl, getFileViewUrl } from '@/shared/utils/fileDownloads';
+import { getFileDownloadUrl } from '@/shared/utils/fileDownloads';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import './ArtifactPreviewPanel.css';
+
+// pdf.js is a megabyte of parser the panel never needs unless a PDF is open, so
+// it loads as its own chunk the first time one is.
+const PdfPreview = lazy(() => import('./PdfPreview'));
 
 export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }: {
   artifact: AgentArtifact;
@@ -29,8 +33,8 @@ export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }:
   const renders = kind === 'html' || kind === 'sheets' || kind === 'slides' || kind === 'document';
   const sourceId = !draft && renders
     ? (kind === 'html' ? artifact.fileId : artifact.previewFileId) : undefined;
-  // A PDF is handed to the browser's own viewer instead of being drawn here: see
-  // /api/files/{id}/view for why (a non-embedded CJK font renders as nothing).
+  // A PDF is parsed and drawn here by pdf.js rather than handed to the browser's
+  // viewer: see /api/files/{id}/view for why the file must be served inline.
   const viewId = !draft && kind === 'pdf' ? artifact.fileId : undefined;
 
   useEffect(() => {
@@ -130,13 +134,9 @@ export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }:
         : kind === 'slides' ? <SlidePreview slides={fileContent.slides || []} />
         : <DocumentPreview paragraphs={fileContent.paragraphs || []} />
       ) : viewId ? (
-        // The browser's own viewer: it substitutes a system font for a CJK face
-        // the document never embedded, which a canvas render cannot do without
-        // CMap tables. `object` keeps a fallback for a browser without one.
-        <object key={viewId} className="artifact-preview-pdf" data={getFileViewUrl(viewId)}
-          type="application/pdf" aria-label={artifact.fileName}>
-          <iframe className="artifact-preview-pdf" src={getFileViewUrl(viewId)} title={artifact.fileName} />
-        </object>
+        <Suspense fallback={<p className="artifact-pdf-note" role="status">{t('preview.loading')}</p>}>
+          <PdfPreview fileId={viewId} fileName={artifact.fileName} />
+        </Suspense>
       ) : <div className="artifact-preview-error"><p>{t('preview.unsupported')}</p></div>}
     </div>
     {kind === 'html' && <div className="artifact-preview-html-note">{t('preview.htmlNote')}</div>}

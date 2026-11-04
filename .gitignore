@@ -39,3 +39,6 @@ config/mcp.json
 end/assets/fonts/*.otf
 # Agent working memory (never commit)
 .workbuddy/
+
+# pdf.js CMap tables and standard fonts, copied by vite.config.ts at startup
+public/pdfjs/

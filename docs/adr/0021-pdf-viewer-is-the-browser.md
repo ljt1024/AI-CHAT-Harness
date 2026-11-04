@@ -1,9 +1,14 @@
 # ADR-0021: The PDF viewer is the browser's, not ours
 
 Date: 2026-11-04
-Status: Accepted
+Status: Superseded by ADR-0022
 Supersedes: the canvas renderer introduced with the artifact preview panel
 Related: ADR-0012 (workspace writes and HTML delivery), ADR-0020 (account scope)
+
+> Superseded by [ADR-0022](0022-pdf-pages-are-drawn-by-pdfjs.md). The two
+> endpoints and the `attachment` / `inline` split it introduced are kept; only
+> the drawing moved back into the panel, because the native viewer's chrome
+> cannot be styled and shows a single page on iOS Safari.
 
 ## Context
 

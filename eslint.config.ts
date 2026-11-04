@@ -5,7 +5,9 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 
 export default [
-  { ignores: ['dist/**', 'end/**', 'harness/**', '.agentforge/**'] },
+  // public/pdfjs holds pdf.js's own CMap tables, fonts and wasm build, copied
+  // there by vite.config.ts before every dev run and build.
+  { ignores: ['dist/**', 'end/**', 'harness/**', '.agentforge/**', 'public/pdfjs/**'] },
   {
     files: ['src/infrastructure/**/*.ts', 'src/features/agents/api.ts'],
     languageOptions: { parser: tseslint.parser, globals: globals.browser },
