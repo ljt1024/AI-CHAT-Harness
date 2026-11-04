@@ -360,6 +360,7 @@
   "preview.pdfLoadFailed": "PDF 解析失败，文件可能已损坏。",
   "preview.pdfPageOf": "第 {current} / {total} 页",
   "preview.previous": "上一页",
+  "preview.resize": "拖动调整预览宽度",
   "preview.retry": "重新加载",
   "preview.rowCount": "{count} 行",
   "preview.rowCount_one": "{count} 行",

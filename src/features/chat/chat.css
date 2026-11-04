@@ -50,14 +50,65 @@
   background: transparent;
 }
 
+/* The width is the reader's: dragged on the divider below and remembered per
+   browser, falling back to the layout default until they touch it. */
 .chat-workspace .artifact-preview {
-  flex-basis: min(42vw, 640px);
+  flex-basis: var(--preview-width, min(42vw, 640px));
   border: 0;
-  border-left: 1px solid var(--border-color);
   border-radius: 0;
   box-shadow: none;
   background: color-mix(in srgb, var(--panel-bg) 96%, transparent);
 }
+
+/* Pane divider. A 9px strip owns the boundary so the line itself is the hit
+   area: the panel no longer draws a border-left, the strip paints it, and it
+   can thicken under the pointer without shifting a single pixel of layout. */
+.chat-workspace .preview-splitter {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 9px;
+  align-self: stretch;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.chat-workspace .preview-splitter::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: 4px;
+  width: 1px;
+  background: var(--border-color);
+  transition: background-color .12s ease, left .12s ease, width .12s ease;
+}
+
+.chat-workspace .preview-splitter:hover::before,
+.chat-workspace .preview-splitter.is-active::before {
+  left: 3px;
+  width: 3px;
+  background: var(--secondary-color);
+}
+
+/* While the pointer holds it, the line must not ease towards the cursor. */
+.chat-workspace .preview-splitter.is-active::before { transition: none; }
+
+/* Keyboard users get the same affordance, thicker, instead of a focus ring
+   drawn over a 1px line nobody can see. */
+.chat-workspace .preview-splitter:focus-visible { outline: none; }
+.chat-workspace .preview-splitter:focus-visible::before {
+  left: 2px;
+  width: 5px;
+  background: var(--secondary-color);
+}
+
+/* While dragging, every element under the pointer must show the same cursor as
+   the strip — a PDF canvas or a link would otherwise take it back. */
+body.is-resizing-preview,
+body.is-resizing-preview * { cursor: col-resize !important; }
+body.is-resizing-preview { user-select: none; }
+
+/* Fullscreen preview covers the workspace, so the divider has nothing to split. */
+.chat-workspace:has(.artifact-preview.is-fullscreen) .preview-splitter { display: none; }
 
 /* 移动端适配 */
 @media (max-width: 768px) {
@@ -217,6 +268,9 @@
 }
 
 @media (max-width: 1100px) {
+  /* Below this width the preview is a full-bleed overlay, not a pane. */
+  .chat-workspace .preview-splitter { display: none; }
+
   .chat-workspace .artifact-preview {
     position: absolute;
     inset: 0;

@@ -360,6 +360,7 @@
   "preview.pdfLoadFailed": "This PDF could not be parsed. The file may be damaged.",
   "preview.pdfPageOf": "Page {current} of {total}",
   "preview.previous": "Previous",
+  "preview.resize": "Drag to resize the preview",
   "preview.retry": "Retry",
   "preview.rowCount": "{count} rows",
   "preview.rowCount_one": "{count} row",

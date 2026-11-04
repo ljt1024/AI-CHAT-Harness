@@ -233,6 +233,7 @@ curl -s localhost:8000/api/mcp/servers/import -H 'content-type: application/json
 
 - **HTML** 连同本地 CSS、JS、图片打包，预览为净化环境，不执行脚本；
 - **PDF** 由 pdf.js 在面板内自行渲染（ADR-0022）：面板自带一条 42px 工具栏——跟随滚动的 `‹ n / N ›` 页码、10% 步进的缩放、点百分比回到适应宽度；所有页一次画完，连续滚动阅读。不再交给浏览器自带阅读器，那个阅读器会带自己的灰底工具栏、自己的深色皮肤，680px 的侧栏里它长得像另一个应用，iOS Safari 上还只显示第一页。**中文 PDF 不会空白**：未嵌入的中文字体（ReportLab 的 `STSong-Light` 是最常见的一种）要 CMap 表才能画字形，所以 `cMapUrl` / `standardFontDataUrl` / `wasmUrl` 指向 `/pdfjs/` 下的三套资源，构建启动时从 `node_modules/pdfjs-dist` 复制（4.3 MB，已 gitignore，按需请求——那份三页的中文报告只拉了 2 个 `.bcmap`）。worker 的 URL 是 `/pdfjs/pdf.worker.min.mjs?v=<pdfjs 版本>`，由 `vite.config.ts` 注入的 `__PDFJS_VERSION__` 拼出——**不参与内容哈希**，因为哈希换不掉「响应头曾经错了」的那份缓存（ADR-0023）。解析失败时面板给出错误、重试与「在新窗口打开」，后者走 `/api/files/{id}/view`（这个端点只对 PDF 返回 `inline`），退回浏览器自己的阅读器；
+- **预览面板与对话之间的分隔线可以拖动**：9px 的拖拽带就是那条线，指针移上去会加粗成主题色，按住左右移动即可分配两栏宽度（预览最窄 300px，对话永远留 420px），双击或聚焦后按 `Home` 回到默认的 `min(42vw, 640px)`，方向键每次 24px。宽度记在 `localStorage` 的 `chat.previewWidth`，下次打开同一浏览器照旧；窗口变小会自动收回，不会把对话挤没。窄于 1100px 时预览本来就是整屏覆盖层，分隔线隐藏。拖动只写 CSS 变量 `--preview-width`、不触发 React 重渲染，所以流式输出期间拖也不会被别的渲染打断；PDF 会跟着重排页宽（`ResizeObserver` 驱动的 `boxWidth`）。
 - **Excel / PPT / Word** 不要求浏览器能打开 Office：后端用标准库读出内容——表格、每页幻灯片的标题与要点、文档段落——浏览器按这份只读视图预览，原文件照常下载。
 
 单个文件 2 MB、每轮 20 个条目（图片至多 6 张，免得成批图表把真正的交付物挤出名单）；内容未变的文件不重复入库，只在新的消息下再挂一张卡。凡是写文件或跑过命令的轮次结束时都会扫描工作区（见 [ADR-0012](docs/adr/0012-workspace-writes-and-html-delivery.md)）。

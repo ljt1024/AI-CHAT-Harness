@@ -16,6 +16,7 @@ import { SSEData } from './types';
 import { useChatModels } from './hooks/useChatModels';
 import { UPLOAD_ACCEPT, useSessionFiles } from './hooks/useFileUpload';
 import { useStickToBottom } from './hooks/useStickToBottom';
+import { usePreviewResize } from './hooks/usePreviewResize';
 import { streamAgents, stopSession, fetchSessionContext } from '@/features/agents/api';
 import { ApprovalCard, type Approval } from '@/features/agents/components/ApprovalCard';
 import type { MessageApproval } from '@/shared/utils/localMessages';
@@ -71,6 +72,7 @@ const ChatAI: React.FC = () => {
   const streamLastPaintRef = useRef(0)
   const streamPendingMessageRef = useRef<Message | null>(null)
   const { t } = useLanguage()
+  const { panelsRef, splitterProps } = usePreviewResize(t('preview.resize'));
   const { user, status, guest, signOut, askToSignIn, spendTurn } = useAuth()
   const { messages } = useChat()
   const activeSessionId = getSelectId();
@@ -852,7 +854,7 @@ const ChatAI: React.FC = () => {
             onConfirm={confirmSkillSession}>
             <p>{t('cap.newSessionBody')}</p>
           </Dialog>
-          <div className="chat-panels">
+          <div className="chat-panels" ref={panelsRef}>
             <div className='messages-content'>
               <div className='messages-scollWrap' ref={messagesRef}>
                 {isWelcomeConversation ? (
@@ -954,6 +956,7 @@ const ChatAI: React.FC = () => {
                   <ArrowDownIcon className="chatScrollBottomIcon" />
                 </div>}
             </div>
+            {previewArtifact && <div {...splitterProps} />}
             {previewArtifact && <ArtifactPreviewPanel key={previewArtifact.toolCallId || previewArtifact.fileId} artifact={previewArtifact} artifacts={previewArtifacts} onSelect={setPreviewArtifact} onClose={() => setPreviewSelection(null)} />}
           </div>
         </div>
