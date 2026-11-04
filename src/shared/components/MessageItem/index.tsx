@@ -1,7 +1,7 @@
 import { AgentTrace } from '@/features/agents/components/AgentTrace';
 import { AgentArtifacts } from '@/features/agents/components/AgentArtifacts';
 import { ApprovalHistory } from '@/features/agents/components/ApprovalHistory';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import StreamingMarkdown from '../MarkDownContent/StreamingMarkdown';
 import Tooltip from '../Tooltip';
 import Icon from '../Icon';
@@ -43,6 +43,11 @@ const MessageItem: React.FC<MessageItemProps> = ({
   const { t, dateLocale } = useLanguage()
   const { handleCopy } = useCopy()
   const messagePop = useMessagePop()
+  // A filename in the answer should be the way to the file. Keeping the identity
+  // of this array stable matters: StreamingMarkdown memoises on it per block.
+  const artifactFiles = useMemo(
+    () => (msg.artifacts || []).map(artifact => ({ name: artifact.fileName, fileId: artifact.fileId })),
+    [msg.artifacts])
 
   useEffect(() => {
     prevLoadingRef.current = msg.isLoading
@@ -130,7 +135,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
                 {
                   (msg.reasoning_content || (msg.isLoading && msg.reasoningPending)) && <ReasoningPanel content={msg.reasoning_content || ''} loading={Boolean(msg.isLoading && (msg.reasoningPending ?? !msg.content))} durationMs={msg.reasoningDurationMs} interrupted={msg.reasoningInterrupted} />
                 }
-                <StreamingMarkdown content={msg.content || ''} streaming={Boolean(msg.isLoading)} />
+                <StreamingMarkdown content={msg.content || ''} streaming={Boolean(msg.isLoading)} files={artifactFiles} />
                 <AgentArtifacts artifacts={msg.artifacts || []} onPreview={onPreviewArtifact} />
               </>
                 : <>

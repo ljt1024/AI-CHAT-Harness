@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import { resolveFileDownloadUrl } from '@/shared/utils/fileDownloads';
+import { remarkFileLinks, type DownloadTarget } from './fileLinks';
 import remarkGfm from 'remark-gfm';
 import hljs from 'highlight.js';
 import javascript from 'highlight.js/lib/languages/javascript';
@@ -297,13 +298,21 @@ const preRenderer = ({ children }: { children?: React.ReactNode }) => {
 
 interface MarkdownContentProps {
   msg: string;
+  /** Artifacts this turn produced; their filenames become download links. */
+  files?: DownloadTarget[];
 }
 
-const MarkdownContent = React.memo(({ msg }: MarkdownContentProps) => {
-   
+type RemarkPlugins = NonNullable<React.ComponentProps<typeof ReactMarkdown>['remarkPlugins']>;
+
+const MarkdownContent = React.memo(({ msg, files }: MarkdownContentProps) => {
+    const remarkPlugins = useMemo<RemarkPlugins>(
+        () => (files && files.length ? [remarkGfm, [remarkFileLinks, { targets: files }]] : [remarkGfm]),
+        [files]
+    );
+
     return (
         <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
+            remarkPlugins={remarkPlugins}
             components={{
                 pre: preRenderer,
                 code: inlineCodeRenderer,

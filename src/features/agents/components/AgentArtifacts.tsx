@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import { downloadAgentArtifact } from '../api';
+import { getFileDownloadUrl } from '@/shared/utils/fileDownloads';
 import { canPreview, formatLabel } from '../preview';
 import type { AgentArtifact } from '../types';
 import './AgentArtifacts.css';
@@ -29,7 +30,14 @@ function ArtifactCard({ artifact, onPreview }: { artifact: AgentArtifact; onPrev
   const size = artifact.size < 1024 * 1024 ? `${Math.max(1, Math.ceil(artifact.size / 1024))} KB` : `${(artifact.size / 1024 / 1024).toFixed(1)} MB`;
   return <li className="agent-artifact">
     <span className="agent-artifact-format">{formatLabel(artifact)}</span>
-    <div className="agent-artifact-info"><strong>{artifact.fileName}</strong><small>{size} · {t('artifact.ready')}</small></div>
+    <div className="agent-artifact-info">
+      {/* The name is the shortest path to the file, so it is the link: clicking it
+          downloads, right-click offers save-as, and a keyboard user can tab to it.
+          The button stays for discoverability, not because the name is inert. */}
+      <a className="agent-artifact-name" href={getFileDownloadUrl(artifact.fileId)}
+        download={artifact.fileName} title={artifact.fileName}>{artifact.fileName}</a>
+      <small>{size} · {t('artifact.ready')}</small>
+    </div>
     {onPreview && canPreview(artifact) && <button type="button" onClick={() => onPreview(artifact)} aria-label={`${t('share.previewAlt')} ${artifact.fileName}`}>{t('share.previewAlt')}</button>}
     <button type="button" onClick={download} disabled={downloading} aria-label={`${t('artifact.downloadLabel')} ${artifact.fileName}`}>
       {downloading ? t('artifact.downloading') : t('artifact.download')}

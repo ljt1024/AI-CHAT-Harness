@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import MarkdownContent from './index';
+import type { DownloadTarget } from './fileLinks';
 import './StreamingMarkdown.css';
 
 /**
@@ -67,23 +68,25 @@ export function splitStreamingMarkdown(source: string): StreamingSplit {
   return { blocks, tail: buffer.join('\n').replace(/\s+$/, ''), tailLanguage: null };
 }
 
-const StreamingBlock = React.memo(function StreamingBlock({ text }: { text: string }) {
-  return <MarkdownContent msg={text} />;
+const StreamingBlock = React.memo(function StreamingBlock({ text, files }: { text: string; files?: DownloadTarget[] }) {
+  return <MarkdownContent msg={text} files={files} />;
 });
 
 interface StreamingMarkdownProps {
   content: string;
   /** True while tokens are still arriving. */
   streaming?: boolean;
+  /** Artifacts this turn produced; their filenames become download links. */
+  files?: DownloadTarget[];
 }
 
-const StreamingMarkdown = React.memo(({ content, streaming = false }: StreamingMarkdownProps) => {
+const StreamingMarkdown = React.memo(({ content, streaming = false, files }: StreamingMarkdownProps) => {
   const split = useMemo(
     () => (streaming ? splitStreamingMarkdown(content) : null),
     [content, streaming]
   );
 
-  if (!streaming) return <MarkdownContent msg={content} />;
+  if (!streaming) return <MarkdownContent msg={content} files={files} />;
   if (!split) return null;
 
   const { blocks, tail, tailLanguage } = split;
@@ -91,7 +94,7 @@ const StreamingMarkdown = React.memo(({ content, streaming = false }: StreamingM
 
   return (
     <div className="stream-markdown">
-      {blocks.map((text, index) => <StreamingBlock key={index} text={text} />)}
+      {blocks.map((text, index) => <StreamingBlock key={index} text={text} files={files} />)}
       {tailLanguage !== null
         ? <pre className="stream-pending-code"><code>{tail}<span className="stream-caret" aria-hidden="true" /></code></pre>
         : tail.length > 0

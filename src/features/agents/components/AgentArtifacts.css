@@ -3,6 +3,9 @@
 .agent-artifact-format { font-size: 12px; font-weight: 700; color: var(--secondary-color); padding: 9px 7px; border: 1px solid var(--border-color); border-radius: 7px; }
 .agent-artifact-info { flex: 1; min-width: 100px; display: grid; gap: 4px; }
 .agent-artifact-info strong { font-size: 13px; overflow-wrap: anywhere; }
+.agent-artifact-name { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; color: var(--text-color); text-decoration: underline; text-decoration-color: var(--border-color); text-underline-offset: 3px; }
+.agent-artifact-name:hover, .agent-artifact-name:focus-visible { text-decoration-color: currentColor; }
+.agent-artifact-name:focus-visible { outline: 2px solid var(--secondary-color); outline-offset: 2px; border-radius: 3px; }
 .agent-artifact-info small { font-size: 12px; opacity: .7; }
 .agent-artifact button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--surface-color); color: var(--secondary-color); cursor: pointer; }
 .agent-artifact button:disabled { opacity: .6; cursor: wait; }
