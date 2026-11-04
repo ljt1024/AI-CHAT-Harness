@@ -165,11 +165,22 @@ const ChatAI: React.FC = () => {
   // "Use" on the agents page opens this page with ?agent=<id>: that means start a
   // conversation with it, not attach it to whatever conversation happened to be
   // open. The parameter is consumed once so a reload does not clear the view again.
+  //
+  // It has to claim the selection for this commit, because the restore effect
+  // below runs after it in the same one and still sees the messages of the
+  // conversation being left behind: its condition (`isNewConversation`) is
+  // computed from the old render, so it would read `chat.agent.<old session>`
+  // and immediately overwrite the requested agent with the previous one. The
+  // picker flipped back to the built-in agent and the turn ran the old
+  // definition -- the new agent could never answer, which looked like every
+  // agent behaving identically.
+  const agentFromRoute = useRef(false);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (!params.has('agent')) return;
     const requested = params.get('agent') || '';
     const id = requested === 'default' ? '' : requested;
+    agentFromRoute.current = true;
     setSelectedAgentId(id);
     localStorage.setItem(AGENT_STORAGE_KEY, id);
     localStorage.setItem('isNewCov', 'true');
@@ -180,7 +191,10 @@ const ChatAI: React.FC = () => {
   // server refuses to change it mid-conversation; reopening a conversation must
   // therefore show the agent it was actually started with.
   useEffect(() => {
-    if (isNewConversation || !activeSessionId) return;
+    // The clear above lands in the next render; from then on the requested agent
+    // is the one this draft will run, so the pin is no longer needed.
+    if (isNewConversation) { agentFromRoute.current = false; return; }
+    if (agentFromRoute.current || !activeSessionId) return;
     setSelectedAgentId(localStorage.getItem(`chat.agent.${activeSessionId}`) || '');
   }, [activeSessionId, isNewConversation]);
   // Choosing an agent means running it: the plain completion path would ignore
