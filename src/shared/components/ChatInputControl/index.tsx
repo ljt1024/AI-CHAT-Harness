@@ -36,6 +36,8 @@ interface ChatInputControlProps {
   supportsFileUpload?: boolean;
   imageOnlyUpload?: boolean;
   imageAccept?: string;
+  /** Extensions the workspace accepts when the file is data, not an image. */
+  fileAccept?: string;
   supportsThinking?: boolean;
   isThinkingEnabled?: boolean;
   uploadedFiles?: UploadedFileItem[];
@@ -60,6 +62,7 @@ const ChatInputControl: React.FC<ChatInputControlProps> = ({
   supportsFileUpload = false,
   imageOnlyUpload = false,
   imageAccept,
+  fileAccept,
   supportsThinking = false,
   isThinkingEnabled = false,
   uploadedFiles = [],
@@ -189,7 +192,7 @@ const ChatInputControl: React.FC<ChatInputControlProps> = ({
                   ref={fileInputRef}
                   type="file"
                   className="file-input-hidden"
-                  accept={imageOnlyUpload ? imageAccept || 'image/*' : undefined}
+                  accept={imageOnlyUpload ? imageAccept || 'image/*' : fileAccept}
                   onChange={onFileChange}
                 />
               </>

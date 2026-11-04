@@ -65,6 +65,11 @@ SIGNUP_OPEN=true
 GUEST_TURNS=4
 GUEST_DAILY_TURNS=200
 GUEST_RETENTION_HOURS=72
+# 会话文件库配额（ADR-0020）：单文件 / 单会话文件数 / 单账号总字节。
+# 反向代理的请求体上限要 ≥ UPLOAD_MAX_BYTES，否则 nginx 先返回自己的 413
+UPLOAD_MAX_BYTES=26214400
+UPLOAD_MAX_FILES=20
+UPLOAD_MAX_BYTES_PER_OWNER=209715200
 # 可选：HTTPS 部署时设 true；额外放行的跨域写请求来源（逗号分隔）
 COOKIE_SECURE=false
 ALLOWED_ORIGINS=
@@ -105,7 +110,7 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 
 - **MongoDB**：`docker run mongo:7`，只绑 `127.0.0.1:27017`，`--wiredTigerCacheSizeGB 0.25` 限内存。应用账号建在 `agentforge` 库里，连接串的认证库是 `authSource=agentforge` 而不是 `admin`——这是最常见的连不上原因。
 - **后端**：专用系统用户跑 venv + uvicorn（`127.0.0.1:8100`，单 worker），systemd 单元 `agentforge.service`（`Restart=always`），日志 `/var/log/agentforge/`。用户需在 `docker` 组里才能管理沙箱容器。
-- **前端**：`npm run build` 产物放 `/var/www/agentforge`，nginx 同站监听 `80` / `8099`；`/api`、`/ws` 反代到后端，SSE 必须 `proxy_buffering off`，`/health` 单独代理。
+- **前端**：`npm run build` 产物放 `/var/www/agentforge`，nginx 同站监听 `80` / `8099`；`/api`、`/ws` 反代到后端，SSE 必须 `proxy_buffering off`，`/health` 单独代理。**请求体上限要与 `UPLOAD_MAX_BYTES` 对齐**：nginx 默认只收 1 MB，文件库（ADR-0020）的上传会在到后端之前就被 413 挡掉，所以 `/api` 的 location 里需要 `client_max_body_size 26m;`（略大于 25 MB 的 `UPLOAD_MAX_BYTES`，留给 multipart 头部）。
 - **沙箱镜像**：`docker build -t agentforge/python-docs:3.12 harness/docker/sandbox-docs`（国内构建给 pip 换内网源），`.env` 里 `SANDBOX_IMAGE=agentforge/python-docs:3.12`、`SANDBOX_WARM_SIZE=0`（小内存机器不预热）。
 - **前端不引用任何外网资源**：`@import` Google Fonts 已移除——样式表在不可达网络下会永远 pending，而 deferred module 脚本要等样式表加载完才执行，结果就是整站白屏且无任何报错。字体走 `:root` 里的系统栈（PingFang SC / Noto Sans SC）。
 
@@ -152,6 +157,28 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 | 命令 | `run_command`（Docker 沙箱内执行，超时与 PID 受限） |
 | 技能 | `list_skills`、`load_skill`、`install_skill`、`delete_skill` |
 | MCP | 通过 Streamable HTTP 注册外部服务，工具按命名空间暴露 |
+
+### 会话文件系统（上传 / 下载）
+
+文件属于**会话**，不属于某条消息：一次上传，这段对话的每一轮都能读它；刷新页面、切换模型、失败的回合都不会弄丢（服务端才是唯一真相）。
+
+- 前端：输入框左侧的回形针。上传后文件以 chip 出现，× 删除。**附件意味着需要工具去读**，所以上传会自动切到智能体模式——纯聊天端点没有工具，传上去也会被静默忽略。
+- 智能体看到的是 `<workspace>/uploads/<安全文件名>`，系统提示里同时列出文件名、大小与类型，`read_file` / `grep` / `run_command` 都能用。
+- 接口：`POST /api/sessions/{sid}/files`（multipart，字段名 `file`）、`GET /api/sessions/{sid}/files`、`DELETE /api/sessions/{sid}/files/{fid}`；下载统一走 `GET /api/files/{fid}/download`，与产物共用一个地址。
+- 默认配额（可配）：单文件 25MB、每会话 20 个、每账号 200MB。匿名访客不能上传。
+- 反方向仍然可用：智能体生成的文件继续作为产物交付（见下文“产物与预览”），两套都指向同一个 workspace。
+
+安全边界不依赖“用户会传正常文件”这个假设（详见 [ADR-0020](docs/adr/0020-conversation-file-system.md)）：
+
+| 风险 | 处理 |
+| --- | --- |
+| 文件名是路径 | 文件名只做展示与 `uploads/<label>` 标签；磁盘上用随机名，`O_CREAT\|O_EXCL\|O_NOFOLLOW` + 0600 |
+| 伪造类型 | 扩展名白名单（文档/数据/图片/zip），并按魔数校验 PDF、图片、zip 与 Office 容器 |
+| 谎报长度 | 按 64KB 分块读、按字节预算截断；中间件先用 `Content-Length` 挡掉超大请求体（Starlette 会在处理函数之前就把表单落到临时盘） |
+| 文件名冲突 | 自动改名为 `report-2.csv`，不覆盖已有文件 |
+| 越权与串会话 | 行按 `owner_id` 读；`fileId` 必须属于请求里的 `sessionId`，否则与不存在同样是 404 |
+| 会话 id 穿越 | `^[A-Za-z0-9_-]{1,64}$`，因为它会成为目录名 |
+| 浏览器执行上传内容 | 一律 `attachment` + `nosniff`；HTML 另加 sandbox CSP，页面内从不内联渲染 |
 
 ### Docker 沙箱
 
@@ -299,7 +326,7 @@ Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验�
 
 - [实现与验收记录](docs/IMPLEMENTATION.md) · [待办与决策](NOTES.md)
 - [技能与 MCP 能力说明](docs/CAPABILITIES.md)
-- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md) · [0017 手机号注册与短信](docs/adr/0017-phone-signup-and-sms-codes.md) · [0018 邮箱注册与验证码邮件](docs/adr/0018-email-signup-and-smtp-codes.md) · [0019 模型调用重试](docs/adr/0019-model-call-retries.md)
+- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md) · [0017 手机号注册与短信](docs/adr/0017-phone-signup-and-sms-codes.md) · [0018 邮箱注册与验证码邮件](docs/adr/0018-email-signup-and-smtp-codes.md) · [0019 模型调用重试](docs/adr/0019-model-call-retries.md) · [0020 会话文件系统](docs/adr/0020-conversation-file-system.md)
 
 ## 常见问题
 

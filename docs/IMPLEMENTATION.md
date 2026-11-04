@@ -32,6 +32,24 @@ The original backend can be started for contract comparison with
 
 ## Progress
 
+### Update: 2026-11-04
+
+A conversation can be given files (ADR-0020). Uploads are stored as blobs outside any
+workspace (`AGENTFORGE_WORKSPACE/_uploads/<session>/`), one `session_files` row each, and
+copied into the workspace a turn actually uses at the start of that turn with a manifest
+appended to the system prompt. The copy is one-way, so an `rm` inside a container cannot
+destroy the reader's file, and the file belongs to the conversation rather than the message
+— it survives a failed turn, a model switch and a page reload. Endpoints:
+`POST/GET /api/sessions/{sid}/files`, `DELETE /api/sessions/{sid}/files/{fid}`, downloads
+through the existing `/api/files/{fid}/download`. Quotas are 25 MB per file, 20 per
+conversation, 200 MB per account (`UPLOAD_MAX_*`), and guests cannot upload at all. The
+request is untrusted end to end: sanitised labels over random 0600 `O_EXCL` blobs, an
+extension allowlist, magic-byte checks, a chunked byte budget plus a `Content-Length` gate
+ahead of Starlette's spool, `sessionId`-scoped lookups, and `attachment` + `nosniff` on the
+way out. 452 backend tests pass (21 new); ruff, tsc, i18n, ESLint and the production build
+pass. Verified live with a real model reading an uploaded CSV, and in a real browser for
+the attach → chip → reload-still-there path.
+
 ### Update: 2026-10-20
 
 Approval follow-up: offline Docker commands and installed skill scripts now execute automatically,

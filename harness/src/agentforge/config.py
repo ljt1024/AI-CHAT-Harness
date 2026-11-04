@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     # is the way to keep the list beside the code and re-apply it on restart.
     mcp_config: Path = Path("../config/mcp.json")
     agentforge_workspace: Path = Path("../.agentforge/workspaces")
+    # Uploads are the one place where a request body is written to disk, so the
+    # three limits that bound it are configuration, not constants: an operator
+    # with small disks and an operator serving data files want different numbers.
+    upload_max_bytes: int = Field(default=25 * 1024 * 1024, ge=1024)
+    upload_max_files: int = Field(default=20, ge=1, le=200)
+    upload_max_bytes_per_owner: int = Field(default=200 * 1024 * 1024, ge=1024)
     approval_timeout: float = 300
     intervention_policy: Path = Path("../config/intervention.yaml")
     sandbox_warm_size: int = Field(default=2, ge=0, le=8)

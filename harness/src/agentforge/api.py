@@ -9,8 +9,8 @@ import time
 from urllib.parse import quote
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, StrictBool
 
 from agentforge.config import Settings
@@ -35,6 +35,7 @@ from agentforge.prompts import with_response_language
 from agentforge.store import MongoDBStore
 from agentforge import email_address
 from agentforge import phone as phone_number
+from agentforge import session_files
 from agentforge.mail import build_mailer
 from agentforge.sms import build_sender
 from agentforge.tools.ask import AskUserTool
@@ -49,6 +50,11 @@ from agentforge.skills import (SKILL_TOOL_NAMES, SkillManager, SkillPackage, Ski
     remove_synced_skill)
 
 logger = logging.getLogger(__name__)
+
+# The only route that receives a file body. Bounding it in the HTTP middleware
+# matters because Starlette spools the whole multipart form before the endpoint
+# runs, so a limit applied inside the endpoint is already too late.
+UPLOAD_PATH = re.compile(r"^/api/sessions/[^/]+/files$")
 
 
 class LegacyRequest(BaseModel):
@@ -237,11 +243,19 @@ def create_app(settings=None, store=None, gateway=None):
     # 503 rather than silently printing codes into the log.
     sms = build_sender(settings)
     mail = build_mailer(settings)
+    # Blobs live beside the workspaces, not inside one: a sandbox is destroyed
+    # when its lease is released, and the reader must still be able to download.
+    file_store = session_files.SessionFiles(
+        settings.agentforge_workspace / "_uploads",
+        settings.upload_max_bytes, settings.upload_max_files,
+        settings.upload_max_bytes_per_owner)
 
     def tools_factory(session_id):
         if session_id in isolated_tools:
             return isolated_tools[session_id]
-        workspace = Workspace(settings.agentforge_workspace / session_id)
+        # The session id becomes a directory name here, so it is validated at
+        # the door rather than assumed to be the uuid the browser normally sends.
+        workspace = Workspace(settings.agentforge_workspace / session_files.session_identity(session_id))
         registry = ToolRegistry()
         for name in ("read_file", "write_file", "grep", "glob"):
             registry.register(FileTool(workspace, name))
@@ -513,6 +527,16 @@ def create_app(settings=None, store=None, gateway=None):
             if request.method not in {"GET", "HEAD", "OPTIONS"} and not same_origin(request):
                 return JSONResponse({"detail": "Cross-origin request rejected."},
                                     status_code=403)
+            # An upload is the one body worth bounding before it is read:
+            # Starlette spools the whole multipart form to disk before the
+            # handler runs, so a check inside the endpoint would already have
+            # paid for the bytes. Answers the same 413 the endpoint would.
+            if request.method == "POST" and UPLOAD_PATH.fullmatch(path):
+                declared = request.headers.get("content-length", "")
+                if declared.isdigit() and int(declared) > settings.upload_max_bytes + 65_536:
+                    return JSONResponse(
+                        {"detail": f"File exceeds the {settings.upload_max_bytes // (1024 * 1024)} MB limit."},
+                        status_code=413)
             if user is not None:
                 request.state.user = user
             if guest:
@@ -862,12 +886,92 @@ def create_app(settings=None, store=None, gateway=None):
              "permission": tool.permission, "source": tool.source}
             for name, tool in registry.tools.items() if name not in SKILL_TOOL_NAMES]}
 
+    def public_file(record: dict) -> dict:
+        """What the browser needs to list and fetch a file -- never its path."""
+        return {"fileId": record["id"], "name": record["name"], "size": record["size"],
+                "mimeType": record["mimeType"], "createdAt": record["createdAt"],
+                "downloadPath": f"/api/files/{record['id']}/download"}
+
+    async def session_or_new(identity: str) -> dict | None:
+        """The session if it exists and is ours; None while it is still a draft.
+
+        The row is created by the first run, but the reader uploads while
+        composing that first message, so a missing row has to be allowed.
+        Files are keyed by (owner, session) anyway, which is what actually stops
+        a stranger from reaching them; an existing row that belongs to somebody
+        else is the usual 404.
+        """
+        session_files.session_identity(identity)
+        row = await store.db.sessions.find_one({"id": identity}, {"_id": 0})
+        if row is not None and row.get("owner_id") != owner_id():
+            raise HTTPException(404, "Session not found.")
+        return row
+
+    @app.post("/api/sessions/{session_id}/files", status_code=201)
+    async def upload_session_file(session_id: str, file: UploadFile):
+        """Take one file into the conversation's workspace.
+
+        Guests are refused: an anonymous owner id is free to mint, and a disk
+        that any visitor can fill is a denial of service, not a feature.
+        """
+        ready()
+        uid = owner_id()
+        if is_guest(uid):
+            raise HTTPException(401, detail={"code": "sign_in_required",
+                                             "reason": "Uploading a file needs an account."})
+        await session_or_new(session_id)
+        records = await store.list("session_files", {"sessionId": session_id}, owner=uid)
+        if len(records) >= file_store.max_files:
+            raise HTTPException(409, f"This conversation already holds {file_store.max_files} files. "
+                                     "Delete one before uploading another.")
+        used = sum(row.get("size", 0) for row in await store.list("session_files", {}, owner=uid))
+        budget = min(file_store.max_bytes, file_store.max_owner_bytes - used)
+        if budget <= 0:
+            raise HTTPException(409, "Your upload allowance is used up. Delete a file to free space.")
+        try:
+            record = await file_store.save(session_id, file, budget, {row["label"] for row in records})
+        except session_files.UploadRejected as exc:
+            raise HTTPException(exc.status, str(exc)) from None
+        stored = await store.put("session_files", record, owner=uid)
+        logger.info("file uploaded session=%s owner=%s size=%d type=%s",
+                    session_id, uid, stored["size"], stored["mimeType"])
+        return {"code": 201, "data": public_file(stored)}
+
+    @app.get("/api/sessions/{session_id}/files")
+    async def list_session_files(session_id: str):
+        ready()
+        await session_or_new(session_id)
+        records = await store.list("session_files", {"sessionId": session_id}, owner=owner_id())
+        return {"code": 200, "data": [public_file(row) for row in
+                                      sorted(records, key=lambda row: row.get("createdAt", ""))]}
+
+    @app.delete("/api/sessions/{session_id}/files/{file_id}")
+    async def delete_session_file(session_id: str, file_id: str):
+        ready()
+        uid = owner_id()
+        await session_or_new(session_id)
+        record = await store.get("session_files", file_id, owner=uid)
+        if record is None or record.get("sessionId") != session_id:
+            raise HTTPException(404, "File not found.")
+        await store.db.session_files.delete_one({"id": file_id, "owner_id": uid})
+        file_store.blob(session_id, file_id).unlink(missing_ok=True)
+        return {"code": 200, "data": {"fileId": file_id}}
+
     @app.get("/api/files/{file_id}/download")
     async def download_artifact(file_id: str):
         ready()
         record = await store.get("artifacts", file_id, owner=owner_id())
         if record is None:
-            raise HTTPException(404, "File not found.")
+            # An uploaded file is downloaded through the same URL, so the reader
+            # has one way to fetch bytes regardless of who produced them.
+            uploaded = await store.get("session_files", file_id, owner=owner_id())
+            if uploaded is None:
+                raise HTTPException(404, "File not found.")
+            # The row already came back inside this caller's ownership scope; the
+            # session check is the second lock, and it has to tolerate a draft
+            # conversation whose session row the first run has not created yet.
+            await session_or_new(uploaded["sessionId"])
+            return uploaded_response(uploaded)
         # The artifact row was written by a run, so its session decides who may
         # download it: a stale row must not outlive the conversation's ownership.
         await owned_session(record.get("sessionId") or "")
@@ -884,6 +988,19 @@ def create_app(settings=None, store=None, gateway=None):
             headers["Content-Security-Policy"] = (
                 "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:")
         return Response(bytes(record["content"]), media_type=mime, headers=headers)
+
+    def uploaded_response(record: dict):
+        """Always an attachment: an uploaded file is never a document of ours."""
+        path = file_store.blob(record["sessionId"], record["id"])
+        if not path.is_file():
+            raise HTTPException(404, "File not found.")
+        headers = {
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(record['name'], safe='')}",
+            "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
+        }
+        if record["mimeType"] == "text/html":
+            headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
+        return FileResponse(path, media_type=record["mimeType"], headers=headers)
 
     @app.get("/api/skills")
     async def list_skills():
@@ -1196,7 +1313,7 @@ def create_app(settings=None, store=None, gateway=None):
             raise HTTPException(404, "Agent not found.")
         return {"code": 200, "data": {"id": agent_id}}
 
-    async def execute(agent, task, session_id, bus, turn_id, remote, resume=False):
+    async def execute(agent, task, session_id, bus, turn_id, remote, resume=False, uploads=()):
         current_session.set(session_id)
         # The run lock recorded who owns this session when it was started. The
         # sandbox lease is bound to the same account, so a task created without
@@ -1246,6 +1363,18 @@ def create_app(settings=None, store=None, gateway=None):
                 isolated_tools[session_id] = registry
                 await store.put("sessions", {**(previous or {}), "id": session_id,
                     "sessionId": session_id, "isolated": isolated})
+                # The reader's files are copied into whichever workspace this run
+                # actually uses -- host directory or sandbox -- because the two
+                # trees are different and the model only sees the active one. The
+                # copy is per turn, so a sandbox is available without teaching the
+                # upload endpoint how a container is created.
+                if uploads:
+                    sandbox = run_sandboxes.get(session_id)
+                    root = (sandbox.workspace.root if sandbox
+                            else settings.agentforge_workspace / session_files.session_identity(session_id))
+                    manifest = await asyncio.to_thread(file_store.sync_into, list(uploads), root)
+                    agent = agent.model_copy(update={
+                        "system_prompt": agent.system_prompt + session_files.manifest_prompt(manifest)})
                 await runtime.run(agent, task, session_id, bus, turn_id=turn_id, resume=resume)
         except Exception:
             # exc_info matters here: the run is a background task, so without it a
@@ -1267,15 +1396,17 @@ def create_app(settings=None, store=None, gateway=None):
                 run_sandboxes.pop(session_id, None)
                 await pool.release(session_id)
 
-    def start(agent, task, session_id, turn_id, remote=(), resume=False):
+    def start(agent, task, session_id, turn_id, remote=(), resume=False, uploads=()):
         if session_id in runs and not runs[session_id][1].done():
             raise HTTPException(409, "Session already has an active run.")
         session_owners[session_id] = owner_id()
         def workspace():
             sandbox = run_sandboxes.get(session_id)
-            return sandbox.workspace if sandbox else Workspace(settings.agentforge_workspace / session_id)
+            return sandbox.workspace if sandbox else Workspace(
+                settings.agentforge_workspace / session_files.session_identity(session_id))
         bus = ArtifactEventBus(runtime, store, workspace)
-        running = asyncio.create_task(execute(agent, task, session_id, bus, turn_id, remote, resume))
+        running = asyncio.create_task(
+            execute(agent, task, session_id, bus, turn_id, remote, resume, uploads))
         running.add_done_callback(lambda task: retire_run(session_id, task, bus))
         runs[session_id] = (bus, running)
         return bus, running
@@ -1286,8 +1417,7 @@ def create_app(settings=None, store=None, gateway=None):
         uid = owner_id()
         if not request.input.strip() or request.sessionId == "default":
             raise HTTPException(422, "Use nonempty input and a unique session ID.")
-        if request.fileIds:
-            raise HTTPException(422, "File uploads require Tier 2.")
+        session_files.session_identity(request.sessionId)
         # Resuming a run does not buy a new turn: it continues the one already paid for.
         if not request.resume:
             await bill_guest_turn()
@@ -1296,6 +1426,14 @@ def create_app(settings=None, store=None, gateway=None):
         row = await store.db.sessions.find_one({"id": request.sessionId}, {"_id": 0})
         if row is not None and row.get("owner_id") != uid:
             raise HTTPException(404, "Session not found.")
+        # A file id is only usable inside the conversation it was uploaded to and
+        # by the account that uploaded it; anything else is the same 404.
+        uploads = []
+        for file_id in request.fileIds:
+            record = await store.get("session_files", file_id, owner=uid)
+            if record is None or record.get("sessionId") != request.sessionId:
+                raise HTTPException(404, "File not found.")
+            uploads.append(record)
         definition = await store.get(
             "agents", request.agentIds[0] if request.agentIds else "default", owner=uid)
         if not definition:
@@ -1307,7 +1445,7 @@ def create_app(settings=None, store=None, gateway=None):
             agent.skills, agent.mcp_servers = request.skills, request.mcp_servers
         agent, remote = await prepare_agent(agent)
         bus, running = start(agent, request.input, request.sessionId, request.turnId, remote,
-                             request.resume)
+                             request.resume, uploads)
         if not request.stream:
             await running
             final = bus.events[-1] if bus.events else None
@@ -1442,6 +1580,10 @@ def create_app(settings=None, store=None, gateway=None):
         await store.db.traces.delete_many({"sessionId": session_id})
         await store.db.checkpoints.delete_many({"sessionId": session_id})
         await store.db.artifacts.delete_many({"sessionId": session_id})
+        # Uploaded blobs are the reader's data, so they go with the conversation
+        # rather than lingering in a store nothing lists any more.
+        await store.db.session_files.delete_many({"sessionId": session_id, **store.scope()})
+        await asyncio.to_thread(file_store.discard, session_id)
         result = await store.db.sessions.delete_one({"id": session_id, **store.scope()})
         if result.deleted_count == 0:
             raise HTTPException(404, "Session not found.")

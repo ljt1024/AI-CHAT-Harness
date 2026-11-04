@@ -14,7 +14,7 @@ import { newChat, storageMessages, ensureAgentTurnId, removeLastAssistantMessage
 import { MODEL_STORAGE_KEY, AGENT_STORAGE_KEY, SHOW_SANDBOX_AND_SKILLS_UI } from './constants';
 import { SSEData } from './types';
 import { useChatModels } from './hooks/useChatModels';
-import { useFileUpload } from './hooks/useFileUpload';
+import { UPLOAD_ACCEPT, useSessionFiles } from './hooks/useFileUpload';
 import { useStickToBottom } from './hooks/useStickToBottom';
 import { streamAgents, stopSession, fetchSessionContext } from '@/features/agents/api';
 import { ApprovalCard, type Approval } from '@/features/agents/components/ApprovalCard';
@@ -148,7 +148,6 @@ const ChatAI: React.FC = () => {
     selectedModelName,
     supportsImageUnderstanding,
     modelSupportsThinking,
-    supportsFileUpload,
     isThinkingEnabled,
     onToggleThinking
   } = useChatModels({
@@ -230,19 +229,50 @@ const ChatAI: React.FC = () => {
     dispatch({ type: 'clearMessages' });
     dispatch({ type: 'getCovList' });
   };
+  // Files are read by tools inside the conversation's workspace, so the
+  // affordance follows tool support and a real account, not the model's
+  // native file API (which DeepSeek does not have).
+  const canAttachFiles = Boolean(user) && selectedModel?.supportsTools !== false;
+  // A reader attaches the file before writing the question, but the conversation
+  // id is minted by the first send. Attaching therefore starts the conversation
+  // the same way sending does, instead of refusing until something is typed.
+  const ensureConversation = (): string => {
+    const currentId = getSelectId();
+    const current = currentId ? getMessageByCovId(currentId).curMessage : null;
+    if (!currentId || !current || current.data.length || localStorage.getItem('isNewCov') === 'true') {
+      newChat({ id: selectedModelId, name: selectedModelName });
+    }
+    localStorage.setItem('isNewCov', 'false');
+    dispatch({ type: 'getCovList' } as any);
+    return getSelectId() || '';
+  };
   const {
     uploadedFiles,
     isUploadingFile,
-    setUploadedFiles,
+    fileIds,
     onUploadFile,
     onRemoveUploadedFile
-  } = useFileUpload({
-    chatApiUrl,
-    selectedModelId,
-    supportsFileUpload,
-    supportsImageUnderstanding,
-    isLoading
+  } = useSessionFiles({
+    sessionId: activeSessionId || '',
+    // Files only mean something when the run has tools to read them and an
+    // account to own them: an anonymous owner id is free to mint, so the server
+    // refuses uploads from a visitor and the affordance stays out of their way.
+    enabled: canAttachFiles,
+    isLoading,
+    ensureSession: ensureConversation
   })
+
+  // A file is only useful where a tool can open it, and the plain completion
+  // path has no tools. Attaching therefore selects the workspace instead of
+  // uploading into a mode that would silently ignore the file -- the same thing
+  // choosing an agent does.
+  const attachFile = (file: File) => {
+    if (!isAgentMode) {
+      setIsAgentMode(true);
+      localStorage.setItem('chat.agentMode', 'true');
+    }
+    void onUploadFile(file);
+  }
 
   const handleInputChange = (value: string) => {
     setInputText(value);
@@ -533,7 +563,6 @@ const ChatAI: React.FC = () => {
     } finally {
       scrollToBottom()
       setIsLoading(false);
-      setUploadedFiles([])
       // 更新会话列表
       dispatch({
         type: 'getCovList'
@@ -573,7 +602,7 @@ const ChatAI: React.FC = () => {
         // With a stored agent the server takes model, tools and limits from that
         // definition; the request fields only matter for the built-in one.
         agentIds: selectedAgentId ? [selectedAgentId] : undefined,
-        ...capabilities, fileIds: userMessage.attachments?.map(file => file.fileId).filter((id): id is string => Boolean(id)) }, (event) => {
+        ...capabilities, fileIds: fileIds.length ? fileIds : undefined }, (event) => {
         if (event.type === 'skill_installed') setSkillCatalogVersion(version => version + 1);
         if (event.type === 'skill_deleted') {
           const removed = event.skill_id;
@@ -662,7 +691,6 @@ const ChatAI: React.FC = () => {
       dispatch({ type: 'addMessages', messages: assistant })
       storageMessages(assistant, model)
       setIsLoading(false)
-      setUploadedFiles([])
       dispatch({ type: 'getCovList' })
       if (controllerRef.current === requestController) controllerRef.current = null
     }
@@ -785,7 +813,6 @@ const ChatAI: React.FC = () => {
       type: 'clearMessages'
     } as any)
     setInputText('')
-    setUploadedFiles([])
     setIsShowShare(false)
     setShareTargetElement(null)
   }
@@ -835,19 +862,20 @@ const ChatAI: React.FC = () => {
                       isLoading={isLoading}
                       contextTokens={activeContextUsage?.tokens}
                       contextWindow={activeContextUsage?.window}
-                      supportsFileUpload={supportsFileUpload && (selectedModel?.supportsProviderFiles || !(isAgentMode && selectedModel?.supportsTools !== false))}
-                      imageOnlyUpload={supportsImageUnderstanding}
+                      supportsFileUpload={canAttachFiles}
+                      fileAccept={UPLOAD_ACCEPT}
+                      imageOnlyUpload={false}
                       imageAccept={selectedModel?.imageAccept}
                       supportsThinking={modelSupportsThinking && !(isAgentMode && selectedModel?.supportsTools !== false)}
                       isThinkingEnabled={isThinkingEnabled}
                       uploadedFiles={uploadedFiles}
                       isUploadingFile={isUploadingFile}
-                      onUploadFile={onUploadFile}
+                      onUploadFile={attachFile}
                       onRemoveUploadedFile={onRemoveUploadedFile}
                       onToggleThinking={onToggleThinking}
                       isAgentMode={isAgentMode && selectedModel?.supportsTools !== false}
-                      onCreateImage={isImageModel ? () => { setUploadedFiles([]); if (!inputText.trim()) setInputText(t('input.imagePrompt')); } : undefined}
-                      onToggleAgentMode={isImageModel || selectedModel?.supportsTools === false ? undefined : () => { const next = !isAgentMode; setIsAgentMode(next); localStorage.setItem('chat.agentMode', String(next)); setUploadedFiles([]); }}
+                      onCreateImage={isImageModel ? () => { if (!inputText.trim()) setInputText(t('input.imagePrompt')); } : undefined}
+                      onToggleAgentMode={isImageModel || selectedModel?.supportsTools === false ? undefined : () => { const next = !isAgentMode; setIsAgentMode(next); localStorage.setItem('chat.agentMode', String(next)); }}
                       onInputChange={handleInputChange}
                       onSubmit={handleSubmit}
                       onStopSSE={onStopSSE}
@@ -894,19 +922,20 @@ const ChatAI: React.FC = () => {
                   isLoading={isLoading}
                   contextTokens={activeContextUsage?.tokens}
                   contextWindow={activeContextUsage?.window}
-                  supportsFileUpload={supportsFileUpload && (selectedModel?.supportsProviderFiles || !(isAgentMode && selectedModel?.supportsTools !== false))}
-                  imageOnlyUpload={supportsImageUnderstanding}
-                      imageAccept={selectedModel?.imageAccept}
+                  supportsFileUpload={canAttachFiles}
+                  fileAccept={UPLOAD_ACCEPT}
+                  imageOnlyUpload={false}
+                  imageAccept={selectedModel?.imageAccept}
                   supportsThinking={modelSupportsThinking && !(isAgentMode && selectedModel?.supportsTools !== false)}
                   isThinkingEnabled={isThinkingEnabled}
                   uploadedFiles={uploadedFiles}
                   isUploadingFile={isUploadingFile}
-                  onUploadFile={onUploadFile}
+                  onUploadFile={attachFile}
                   onRemoveUploadedFile={onRemoveUploadedFile}
                   onToggleThinking={onToggleThinking}
                   isAgentMode={isAgentMode && selectedModel?.supportsTools !== false}
-                      onCreateImage={isImageModel ? () => { setUploadedFiles([]); if (!inputText.trim()) setInputText(t('input.imagePrompt')); } : undefined}
-                  onToggleAgentMode={isImageModel || selectedModel?.supportsTools === false ? undefined : () => { const next = !isAgentMode; setIsAgentMode(next); localStorage.setItem('chat.agentMode', String(next)); setUploadedFiles([]); }}
+                  onCreateImage={isImageModel ? () => { if (!inputText.trim()) setInputText(t('input.imagePrompt')); } : undefined}
+                  onToggleAgentMode={isImageModel || selectedModel?.supportsTools === false ? undefined : () => { const next = !isAgentMode; setIsAgentMode(next); localStorage.setItem('chat.agentMode', String(next)); }}
                   onInputChange={handleInputChange}
                   onSubmit={handleSubmit}
                   onStopSSE={onStopSSE}
