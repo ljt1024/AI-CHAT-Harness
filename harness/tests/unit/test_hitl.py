@@ -136,19 +136,57 @@ async def test_allow_for_session_stops_asking_for_that_tool_only():
     assert await manager.check(agent, other, ToolCall(name="delete_page"), approve_remembering, "s2")
 
 
-async def test_host_shell_cannot_be_granted_for_the_session(tmp_path):
-    store = MongoDBStore("", "test", client=AsyncMongoMockClient())
-    manager = ApprovalManager(store, timeout=0.05)
+async def test_host_shell_can_be_granted_for_the_session(tmp_path):
+    """A host shell is exactly the tool a reader gets tired of approving.
 
-    async def remember_anyway(kind, **data):
+    It used to be refused a session grant; the cost was twenty identical prompts
+    in one task, which teaches clicking without reading. The grant is per tool
+    and per conversation, so the next conversation asks again.
+    """
+    store = MongoDBStore("", "test", client=AsyncMongoMockClient())
+    manager, asked = ApprovalManager(store, timeout=0.05), []
+
+    async def approve_remembering(kind, **data):
+        asked.append(kind)
         if kind == "await_approval":
-            assert data["rememberable"] is False
+            assert data["rememberable"] is True
             manager.resolve(data["call_id"], True, "", remember=True)
 
     tool = ShellTool(Workspace(tmp_path))
     tool.permission = "confirm"
     agent = AgentDefinition(name="auto")
     assert await manager.check(agent, tool, ToolCall(name="run_command", arguments={"command": "pwd"}),
-                               remember_anyway, "s1")
-    # The client asked for a session grant; the gate refused to widen the boundary.
-    assert "run_command" not in manager.remembered.get("s1", set())
+                               approve_remembering, "s1")
+    assert "run_command" in manager.remembered["s1"]
+
+    async def quiet(kind, **data):
+        pytest.fail("A remembered shell must not ask again in this conversation")
+
+    assert await manager.check(agent, tool, ToolCall(name="run_command", arguments={"command": "ls"}),
+                               quiet, "s1")
+    # A different conversation has its own empty set of grants.
+    assert await manager.check(agent, tool, ToolCall(name="run_command", arguments={"command": "pwd"}),
+                               approve_remembering, "s2")
+
+
+async def test_a_remembered_tool_still_obeys_a_denial(tmp_path):
+    """Remembering must not widen the gate: a policy stop outranks the grant.
+
+    The denial is evaluated before `remembered` is consulted, so a tool marked
+    deny by policy is refused even though the human allowed it for the session.
+    """
+    from agentforge.policy import InterventionPolicy
+
+    store = MongoDBStore("", "test", client=AsyncMongoMockClient())
+    policy = InterventionPolicy({"tools": {"run_command": {"level": "deny", "reason": "no shell here"}}})
+    manager = ApprovalManager(store, timeout=0.05, policy=policy)
+    manager.remembered["s1"] = {"run_command"}
+
+    async def never(kind, **data):
+        if kind == "await_approval":
+            pytest.fail("A denied tool must not prompt, remembered or not")
+
+    tool = ShellTool(Workspace(tmp_path))
+    tool.permission = "confirm"
+    assert not await manager.check(AgentDefinition(name="auto"), tool,
+                                   ToolCall(name="run_command", arguments={"command": "pwd"}), never, "s1")

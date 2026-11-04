@@ -109,7 +109,7 @@
   "agentwiz.toolsHint": "只勾选它真正需要的。写文件默认需要确认，读取与搜索自动执行。",
   "approval.allow": "批准执行",
   "approval.allowSession": "本会话都允许",
-  "approval.allowSessionHint": "本次对话里这个远端工具不再逐次打断；拒绝规则与策略拦截仍然生效，新建或删除会话后失效。",
+  "approval.allowSessionHint": "本次对话里这个工具不再逐次打断；拒绝规则与策略拦截仍然生效，新建会话或重启服务后失效。",
   "approval.answered": "已回复",
   "approval.approved": "已批准",
   "approval.closed": "审批已结束",

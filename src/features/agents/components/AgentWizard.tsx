@@ -129,6 +129,13 @@ export function AgentWizard({ initial, mode, onCancel, onSaved }: {
   const update = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft(current => ({ ...current, [key]: value }));
 
+  // Show what the server would actually do, not a hardcoded "confirm". The
+  // tool catalogue carries each tool's own default; a wizard that displays a
+  // stricter level than the run uses is how every call ends up looking like it
+  // must be approved.
+  const permissionOf = (name: string): ToolPermission =>
+    draft.permissions[name] || tools.find(tool => tool.name === name)?.permission || 'confirm';
+
   const toggle = (key: 'tools' | 'skills' | 'servers', value: string, limit = Number.POSITIVE_INFINITY) => {
     const selected = draft[key];
     if (selected.includes(value)) {
@@ -326,7 +333,7 @@ export function AgentWizard({ initial, mode, onCancel, onSaved }: {
               : <div className="agent-permission-list">
                 {draft.tools.map(name => <label key={name} className="agent-permission-row">
                   <span>{name}</span>
-                  <select value={draft.permissions[name] || 'confirm'}
+                  <select value={permissionOf(name)}
                     onChange={event => setDraft(current => ({ ...current,
                       permissions: { ...current.permissions, [name]: event.target.value as ToolPermission } }))}>
                     {(['auto', 'rule', 'confirm'] as const).map(level =>

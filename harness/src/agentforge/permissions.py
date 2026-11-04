@@ -194,10 +194,18 @@ class ApprovalManager:
             self.owners[identity] = session_id
         record = {"id": identity, "tool_call_id": call.id, "tool": call.name,
                   "arguments": call.arguments, "status": "pending", "kind": "approve"}
-        # Only a remote service can be let off for the whole session: its calls are
-        # one bounded surface the human just looked at. A shell command or a file
-        # write can do something entirely different next time, so it keeps asking.
-        rememberable = getattr(tool, "source", "") == "mcp" and bool(session_id)
+        # Any tool that reached this point may be granted for the rest of the
+        # conversation. It used to be remote MCP tools only, on the theory that a
+        # shell command can do something entirely different next time -- true, but
+        # it left the reader approving the same `run_command` or `write_file`
+        # twenty times in one task, which trains them to click through without
+        # reading. The boundary that matters is not "how many prompts", it is that
+        # a remembered tool is remembered as a *tool*, never as a set of arguments,
+        # and that remembering cannot widen anything else: a policy denial returns
+        # above this method before `remembered` is ever consulted, so a rule that
+        # forbids the next call still forbids it, and the grant lives in memory
+        # only -- a restart or a new conversation asks again.
+        rememberable = bool(session_id)
         self.grants[identity] = rememberable
         if session_id:
             record["sessionId"] = session_id
