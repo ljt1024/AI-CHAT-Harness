@@ -22,6 +22,7 @@ from helpers import TEST_PASSWORD
 
 SESSION = "5f1a2b3c-0000-4000-8000-000000000001"
 CSV = "region,total\nnorth,12\n"
+PDF = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
 
 
 class FakeUpload:
@@ -178,6 +179,46 @@ async def test_an_uploaded_file_is_listed_and_downloaded_as_an_attachment(servic
         assert fetched.content == CSV.encode()
         assert fetched.headers["content-disposition"].startswith("attachment;")
         assert fetched.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_a_pdf_may_be_rendered_by_the_browser_reader(service):
+    app, _, _ = service
+    async with client_for(app) as client:
+        created = await upload(client, name="report.pdf", body=PDF)
+        assert created.status_code == 201, created.text
+        file_id = created.json()["data"]["fileId"]
+
+        shown = await client.get(f"/api/files/{file_id}/view")
+        assert shown.status_code == 200, shown.text
+        assert shown.headers["content-type"] == "application/pdf"
+        # Inline is the point: an iframe pointed at an `attachment` downloads the
+        # file instead of showing it.
+        assert shown.headers["content-disposition"].startswith("inline;")
+        assert shown.headers["x-content-type-options"] == "nosniff"
+        assert shown.content == PDF
+
+
+async def test_only_a_pdf_gets_the_inline_door(service):
+    app, _, _ = service
+    async with client_for(app) as client:
+        created = await upload(client)  # a CSV
+        file_id = created.json()["data"]["fileId"]
+        # Everything else stays an attachment: an uploaded HTML file must never
+        # render on this origin, so the view door refuses rather than quietly
+        # serving it with a different disposition.
+        assert (await client.get(f"/api/files/{file_id}/view")).status_code == 415
+        assert (await client.get("/api/files/does-not-exist/view")).status_code == 404
+
+
+async def test_another_accounts_file_is_not_viewable(service):
+    app, store, _ = service
+    await store.put("session_files", {
+        "id": "foreign-view", "sessionId": SESSION, "name": "theirs.pdf",
+        "label": "theirs.pdf", "size": 3, "sha256": "x", "mimeType": "application/pdf",
+        "createdAt": "2026-01-01T00:00:00+00:00"}, owner="another-account")
+    async with client_for(app) as client:
+        # Same 404 as an unknown id: the inline door must not confirm existence.
+        assert (await client.get("/api/files/foreign-view/view")).status_code == 404
 
 
 async def test_an_unknown_type_is_refused_over_http(service):

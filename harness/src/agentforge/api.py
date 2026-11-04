@@ -957,13 +957,16 @@ def create_app(settings=None, store=None, gateway=None):
         file_store.blob(session_id, file_id).unlink(missing_ok=True)
         return {"code": 200, "data": {"fileId": file_id}}
 
-    @app.get("/api/files/{file_id}/download")
-    async def download_artifact(file_id: str):
-        ready()
+    async def owned_file(file_id: str):
+        """The file this caller may read, after both locks, as (body, type, name).
+
+        `body` is bytes for an artifact (stored in the row) or a `Path` for an
+        uploaded blob (streamed from disk).
+        """
         record = await store.get("artifacts", file_id, owner=owner_id())
         if record is None:
-            # An uploaded file is downloaded through the same URL, so the reader
-            # has one way to fetch bytes regardless of who produced them.
+            # An uploaded file is fetched through the same URL, so the reader has
+            # one way in regardless of who produced the bytes.
             uploaded = await store.get("session_files", file_id, owner=owner_id())
             if uploaded is None:
                 raise HTTPException(404, "File not found.")
@@ -971,36 +974,56 @@ def create_app(settings=None, store=None, gateway=None):
             # session check is the second lock, and it has to tolerate a draft
             # conversation whose session row the first run has not created yet.
             await session_or_new(uploaded["sessionId"])
-            return uploaded_response(uploaded)
+            path = file_store.blob(uploaded["sessionId"], uploaded["id"])
+            if not path.is_file():
+                raise HTTPException(404, "File not found.")
+            return path, uploaded["mimeType"], uploaded["name"]
         # The artifact row was written by a run, so its session decides who may
-        # download it: a stale row must not outlive the conversation's ownership.
+        # read it: a stale row must not outlive the conversation's ownership.
         await owned_session(record.get("sessionId") or "")
         artifact = record["artifact"]
-        mime = artifact.get("mimeType") or "application/octet-stream"
+        return (bytes(record["content"]), artifact.get("mimeType") or "application/octet-stream",
+                artifact["fileName"])
+
+    def serve_file(body, mime: str, name: str, disposition: str):
         headers = {
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(artifact['fileName'], safe='')}",
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(name, safe='')}",
             "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
         }
         # Generated HTML is the one delivery the browser is allowed to render, and
-        # only inside a sandbox; a PDF or an image is rendered by our own viewer
-        # from bytes that never get to act as a document of their own.
+        # only inside a sandbox; it is never inline, so no CSP is needed elsewhere.
         if mime == "text/html":
             headers["Content-Security-Policy"] = (
                 "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:")
-        return Response(bytes(record["content"]), media_type=mime, headers=headers)
+        if isinstance(body, bytes):
+            return Response(body, media_type=mime, headers=headers)
+        return FileResponse(body, media_type=mime, headers=headers)
 
-    def uploaded_response(record: dict):
-        """Always an attachment: an uploaded file is never a document of ours."""
-        path = file_store.blob(record["sessionId"], record["id"])
-        if not path.is_file():
-            raise HTTPException(404, "File not found.")
-        headers = {
-            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(record['name'], safe='')}",
-            "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
-        }
-        if record["mimeType"] == "text/html":
-            headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
-        return FileResponse(path, media_type=record["mimeType"], headers=headers)
+    @app.get("/api/files/{file_id}/download")
+    async def download_artifact(file_id: str):
+        """Always an attachment: a file is never a document of ours."""
+        ready()
+        body, mime, name = await owned_file(file_id)
+        return serve_file(body, mime, name, "attachment")
+
+    @app.get("/api/files/{file_id}/view")
+    async def view_artifact(file_id: str):
+        """The one file the browser is allowed to render for itself: a PDF.
+
+        Rendering it here meant shipping pdf.js and a worker, and pdf.js draws
+        nothing for text set in a CJK font the document does not embed —
+        ReportLab's STSong-Light is the common case — because mapping those glyph
+        ids needs CMap tables we would also have to serve. The browser's own
+        viewer substitutes a system font, so the same file renders. Everything
+        else stays an attachment: an uploaded HTML file must never render on this
+        origin, and a caller that asks for one gets a refusal rather than a
+        silently different disposition.
+        """
+        ready()
+        body, mime, name = await owned_file(file_id)
+        if mime != "application/pdf":
+            raise HTTPException(415, "Only a PDF can be shown in the viewer.")
+        return serve_file(body, mime, name, "inline")
 
     @app.get("/api/skills")
     async def list_skills():
