@@ -229,7 +229,7 @@
   "chat.defaultDescription": "默认推理模型",
   "chat.loading": "思考中...",
   "chat.serverBusy": "⚠️ 服务器繁忙, 请稍后再试！",
-  "chat.subtitle": "搭建、运行、检查你的智能体",
+  "chat.subtitle": "你的 AI 办公助手",
   "delete.allContent": "确定删除全部对话记录吗？此操作不可逆，请谨慎操作",
   "delete.allTitle": "删除全部",
   "delete.singleContent": "确定删除此条对话记录吗？此操作不可逆，请谨慎操作",

@@ -229,7 +229,7 @@
   "chat.defaultDescription": "Default reasoning model",
   "chat.loading": "Thinking...",
   "chat.serverBusy": "⚠️ Server is busy, please try again later!",
-  "chat.subtitle": "Build, run and inspect your agents",
+  "chat.subtitle": "Your AI assistant for everyday work",
   "delete.allContent": "Delete all conversations? This action cannot be undone.",
   "delete.allTitle": "Delete All",
   "delete.singleContent": "Delete this conversation? This action cannot be undone.",
