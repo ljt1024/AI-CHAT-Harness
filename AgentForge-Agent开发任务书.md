@@ -250,6 +250,21 @@ WS     /ws/devtools/{session_id}      Inspector 实时事件
 | T15 | **Skills 系统**（安装/SHA256 增量同步/恢复） | `uv run pytest tests/unit/test_skills.py -q`（含增量同步断言） |
 | T16 | **子 Agent 委派**（TaskHandoff 校验 + 独立 Harness 实例 + Artifact 回传） | `uv run pytest tests/e2e/test_subagent.py -q`（含缺 acceptance_criteria 被拒） |
 
+### Tier 2 补充 · 用户鉴权与隔离（T15.A，待实施）
+
+对应《多智能体平台-开发计划.md》阶段 2.1 / M2A，作为当前 Skills/MCP 接入后的下一平台安全里程碑。执行顺序为 T15 → T15.A1~T15.A4 → T16；保留旧任务编号，不回退已完成模块。未通过前仅允许可信本机单用户开发，禁止多人开放。首版不含公开注册、团队/RBAC、SSO 和资源共享。
+
+下列路径和命令是**计划交付项**，尚未实现，不能据此宣称已支持鉴权或用户隔离。`uv run` 命令在 `harness/` 下运行。
+
+| Task | 内容 | 计划验收命令 |
+|---|---|---|
+| T15.A1 | 管理员创建账号、成熟库密码哈希、服务端可撤销 Cookie 会话；登录/退出/当前用户、过期与限流、CSRF/Origin/CORS；前端登录和失效处理 | `uv run pytest tests/unit/test_auth.py tests/e2e/test_auth_api.py -q`；`npm run build` + `npm run check:i18n` |
+| T15.A2 | 服务端身份贯穿存储与运行；所有资源操作/引用按用户授权；安装/加载 Skills、发现/调用 MCP、会话/Trace/检查点/审批/SSE/文件全部纳入；匿名模型调用关闭 | `uv run pytest tests/e2e/test_user_isolation.py -q`（双用户 CRUD、伪造 owner、跨用户引用/执行/审批/订阅/恢复/下载及同内容技能独立安装） |
+| T15.A3 | 用户/会话级工作区、运行锁、租约/快照、并发限制；MCP 凭证加密与脱敏；维护窗口显式归属迁移、dry-run、幂等、备份恢复和回滚 | `uv run pytest tests/e2e/test_tenant_sandbox.py tests/unit/test_mcp_secrets.py tests/e2e/test_owner_migration.py -q`（需真实 Docker/MongoDB；迁移在备份副本验证） |
+| T15.A4 | 双账号前端状态分区与退出清理、完整登录→安装→加载→MCP→审批流程、越权回归；补齐安全检查与部署说明 | `uv run pytest tests/unit tests/e2e -q`；`uv run --with playwright python ../scripts/verify_user_isolation.py`（运行中的测试服务、两独立浏览器登录态）；前端 build/lint/i18n 全通过 |
+
+实施前先补充鉴权与数据归属 ADR，明确接口、索引、Cookie/CSRF 策略、退出/在途执行策略和迁移回滚流程；身份不得由模型或客户端指定。按顺序完成身份→存储/API/工具授权→沙箱及迁移→前端与端到端验收，禁止只做登录页而保留匿名执行入口。详细约束和发布 Gate 以阶段 2.1 为准。
+
 ### Tier 3 · 质量与上线
 
 | Task | 内容 | 验收命令 |
@@ -262,6 +277,7 @@ WS     /ws/devtools/{session_id}      Inspector 实时事件
 ## 7. 完成定义（Definition of Done）
 
 - [ ] T0~T20 验收命令实际执行通过（T10~T12、T20 需 Linux + Docker）
+- [ ] 多人发布前，T15.A1~T15.A4 / M2A 全部验收通过，旧数据显式归属迁移与回滚演练完成；未完成不得声明支持多用户隔离
 - [ ] 前端 `end/` 目录 diff 为零（旧后端未被动过）
 - [ ] `grep -r "DEEPSEEK_API_KEY" harness/ --include="*.py"` 仅环境变量读取处
 - [ ] 前端改动符合 ARCHITECTURE.md（lint + check:i18n 通过）
