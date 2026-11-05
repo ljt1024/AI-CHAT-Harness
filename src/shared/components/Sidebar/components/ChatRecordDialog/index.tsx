@@ -4,6 +4,7 @@ import { useChat, useChatDispatch } from '@/app/providers/ChatContext'
 import { useLanguage } from '@/app/providers/LanguageContext'
 import JsonUploader from '@/shared/components/JsonUploader'
 import { exportJson } from '@/shared/utils'
+import { APP_SLUG } from '@/shared/config/brand'
 import { getLoclMessages, getCovIdList, type CovIdListItem, type Conversation } from '@/shared/utils/localMessages'
 import EditTitDialog from '../EditTitDialog'
 import DeleteDialog from '../DeleteDialog'
@@ -23,7 +24,7 @@ const ChatRecordDialog = ({ isShowRecordDialog, setIsShowRecordDialog }: Props) 
   const sorted = useMemo(() => [...covList].sort((a, b) => Number(b.isTop) - Number(a.isTop) || (Date.parse(b.latestTime || '') || 0) - (Date.parse(a.latestTime || '') || 0)), [covList])
   const closeImport = () => { setImportOpen(false); setImportData([]); setImportChat([]) }
   const confirmImport = () => { dispatch({ type: 'importChat', data: importChat }); dispatch({ type: 'getCovList' }); closeImport() }
-  const exportChat = () => { const stamp = new Date().toISOString().replace(/[.:]/g, '-'); void exportJson(getLoclMessages(), `ai-chat-conversations-${stamp}.json`) }
+  const exportChat = () => { const stamp = new Date().toISOString().replace(/[.:]/g, '-'); void exportJson(getLoclMessages(), `${APP_SLUG}-conversations-${stamp}.json`) }
   return <>
     <Dialog isOpen={isShowRecordDialog} onClose={() => setIsShowRecordDialog(false)} title={t('record.title')} type="confirm" size="large" className="record-dialog" onConfirm={() => setIsShowRecordDialog(false)}>
       <div className="record-intro"><div><p className="record-eyebrow">{t('record.eyebrow')}</p><p>{t('record.subtitle')}</p></div><strong>{covList.length}<small>{t('record.conversationUnit')}</small></strong></div>

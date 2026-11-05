@@ -1,7 +1,8 @@
 {
-  "name": "deepseek",
+  "name": "agentforge",
   "private": true,
   "version": "0.0.0",
+  "description": "AgentForge frontend: React + Vite client for the Python agent harness",
   "type": "module",
   "scripts": {
     "dev": "vite --mode development",
