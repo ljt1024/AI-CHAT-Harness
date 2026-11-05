@@ -20,3 +20,10 @@ export const APP_NAME = 'AgentForge';
  * into a download name.
  */
 export const APP_SLUG = 'agentforge';
+
+/**
+ * Monogram for the round badge in the sidebar footer, where the account avatar
+ * sits on the opposite row with its own initial. Two letters rather than one:
+ * "A" alone reads as the account avatar, which is the row above it.
+ */
+export const APP_INITIALS = 'AF';

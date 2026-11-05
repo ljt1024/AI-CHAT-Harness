@@ -9,6 +9,7 @@ import { useChat, useChatDispatch } from '@/app/providers/ChatContext'
 import { useLanguage } from '@/app/providers/LanguageContext'
 import EmailBindDialog from '@/features/auth/EmailBindDialog'
 import { getSelectId, storageSelectId, type CovIdListItem } from '@/shared/utils/localMessages'
+import { APP_INITIALS, APP_NAME } from '@/shared/config/brand'
 import './index.css'
 
 function SidebarIcon({ name }: { name: 'search' | 'panel' | 'new' | 'more' | 'records' | 'chat' | 'agents' }) {
@@ -113,7 +114,7 @@ export default function Sidebar({ isLoading, account }: {
     }}>
       {open ? <>
         <header className="sidebar-header">
-          <div className="sidebar-brand"><SidebarIcon name="chat" /><span>AI Chat</span></div>
+          <div className="sidebar-brand"><SidebarIcon name="chat" /><span>{APP_NAME}</span></div>
           <button type="button" className="sidebar-icon-button" aria-label={t('sidebar.search')} aria-expanded={searching} onClick={() => { setSearching(value => !value); setQuery('') }}><SidebarIcon name="search" /></button>
           <button ref={collapseRef} type="button" className="sidebar-icon-button" aria-label={t('sidebar.collapse')} onClick={() => setOpen(false)}><SidebarIcon name="panel" /></button>
         </header>
@@ -161,7 +162,7 @@ export default function Sidebar({ isLoading, account }: {
           </>}
         </div>}
         <button type="button" className="sidebar-footer" disabled={isLoading} onClick={() => setRecords(true)} aria-label={t('sidebar.openManager')}>
-          <span className="sidebar-avatar">AI</span><span className="sidebar-footer-label">{t('sidebar.myChats')}<small>{t('sidebar.count', { count: covList.length })}</small></span><SidebarIcon name="more" />
+          <span className="sidebar-avatar">{APP_INITIALS}</span><span className="sidebar-footer-label">{t('sidebar.myChats')}<small>{t('sidebar.count', { count: covList.length })}</small></span><SidebarIcon name="more" />
         </button>
       </> : <div className="sidebar-rail">
         <button ref={expandRef} type="button" className="sidebar-icon-button" aria-label={t('sidebar.expand')} onClick={() => setOpen(true)}><SidebarIcon name="panel" /></button>
