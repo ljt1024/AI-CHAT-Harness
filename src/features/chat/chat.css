@@ -219,7 +219,9 @@ body.is-resizing-preview { user-select: none; }
 
 .new-conversation-subtitle {
   margin: 0 0 8px;
-  font-size: 15px;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.5;
   color: var(--text-muted-color);
   letter-spacing: 0.02em;
   max-width: 520px;
@@ -243,7 +245,7 @@ body.is-resizing-preview { user-select: none; }
   }
 
   .new-conversation-subtitle {
-    font-size: 14px;
+    font-size: 16px;
     margin-bottom: 6px;
   }
 
