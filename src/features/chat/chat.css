@@ -191,7 +191,9 @@ body.is-resizing-preview { user-select: none; }
 .messages-wrap {
   display: flex;
   flex-direction: column;
-  padding: 20px 42px 24px;
+  /* The last line must not sit flush against the composer: at 24px a table's
+     bottom border reads as clipped by the input box. */
+  padding: 20px 42px 32px;
   max-width: 1508px;
   margin: 0 auto;
   width: 100%;
@@ -230,7 +232,7 @@ body.is-resizing-preview { user-select: none; }
 /* 移动端适配 */
 @media (max-width: 768px) {
   .messages-wrap {
-    padding: 16px 16px 20px;
+    padding: 16px 16px 28px;
     max-width: 100%;
   }
 
@@ -512,7 +514,9 @@ blockquote {
   position: absolute;
   right: 0;
   left: 0;
-  bottom: 160px;
+  /* Sits above the composer, whose height is measured at runtime: a multi-line
+     draft or an inline approval card used to swallow the button. */
+  bottom: calc(var(--composer-height, 160px) + 16px);
   height: 36px;
   width: 36px;
   text-align: center;

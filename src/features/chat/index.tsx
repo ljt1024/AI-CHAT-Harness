@@ -15,7 +15,7 @@ import { MODEL_STORAGE_KEY, AGENT_STORAGE_KEY, SHOW_SANDBOX_AND_SKILLS_UI } from
 import { SSEData } from './types';
 import { useChatModels } from './hooks/useChatModels';
 import { UPLOAD_ACCEPT, useSessionFiles } from './hooks/useFileUpload';
-import { useStickToBottom } from './hooks/useStickToBottom';
+import { useStickToBottom, SCROLL_BTN_DISTANCE } from './hooks/useStickToBottom';
 import { usePreviewResize } from './hooks/usePreviewResize';
 import { streamAgents, stopSession, fetchSessionContext } from '@/features/agents/api';
 import { ApprovalCard, type Approval } from '@/features/agents/components/ApprovalCard';
@@ -67,7 +67,7 @@ const ChatAI: React.FC = () => {
   const [isShowShare, setIsShowShare] = useState(false)
   const [shareTargetElement, setShareTargetElement] = useState<HTMLElement | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { containerRef: messagesRef, follow: followStream, scrollToBottom: scrollMessagesToBottom } = useStickToBottom();
+  const { containerRef: messagesRef, follow: followStream, scrollToBottom: scrollMessagesToBottom, distanceToBottom } = useStickToBottom();
   const streamFrameRef = useRef<number | null>(null)
   const streamTimerRef = useRef<number | null>(null)
   const streamLastPaintRef = useRef(0)
@@ -330,21 +330,18 @@ const ChatAI: React.FC = () => {
 
   useEffect(() => {
     dispatch({type: 'getLastMessages'})
-    const showScrollBtnHeight = 200
     const messagesRefCurrent = messagesRef.current
-    if (messagesRefCurrent) {
-      const handleMessagesScroll = () => {
-        const bottomHeight = messagesRefCurrent.scrollHeight - messagesRefCurrent.scrollTop - messagesRefCurrent.clientHeight
-        setIsShowScrollBtn(bottomHeight >= showScrollBtnHeight)
-      }
-
-      messagesRefCurrent.addEventListener('scroll', handleMessagesScroll)
-
-      return () => {
-        messagesRefCurrent.removeEventListener('scroll', handleMessagesScroll)
-      }
+    if (!messagesRefCurrent) return
+    const handleMessagesScroll = () => {
+      setIsShowScrollBtn(distanceToBottom() >= SCROLL_BTN_DISTANCE)
     }
-  }, [])
+
+    messagesRefCurrent.addEventListener('scroll', handleMessagesScroll)
+
+    return () => {
+      messagesRefCurrent.removeEventListener('scroll', handleMessagesScroll)
+    }
+  }, [distanceToBottom])
 
   useEffect(() => {
     return () => {
@@ -353,11 +350,30 @@ const ChatAI: React.FC = () => {
     }
   }, [])
 
+  // Scroll events alone leave the button stale: a reflowed table or an expanded
+  // step group changes the distance without scrolling anything.
   useEffect(() => {
     if (isWelcomeConversation || messages.length === 0) {
       setIsShowScrollBtn(false)
+      return
     }
-  }, [isWelcomeConversation, messages.length])
+    const frame = requestAnimationFrame(() => setIsShowScrollBtn(distanceToBottom() >= SCROLL_BTN_DISTANCE))
+    return () => cancelAnimationFrame(frame)
+  }, [isWelcomeConversation, messages, distanceToBottom])
+
+  // The jump button floats above the composer, so its offset has to follow that
+  // box: it was hardcoded to 160px and got buried under a multi-line draft or an
+  // inline approval card.
+  useEffect(() => {
+    const composer = composerRef.current
+    const panel = messagesRef.current?.parentElement
+    if (!composer || !panel) return
+    const sync = () => panel.style.setProperty('--composer-height', `${composer.offsetHeight}px`)
+    sync()
+    const observer = new ResizeObserver(sync)
+    observer.observe(composer)
+    return () => observer.disconnect()
+  }, [isWelcomeConversation, pendingApproval, messagesRef])
 
   useEffect(() => {
     followStream();
@@ -950,10 +966,7 @@ const ChatAI: React.FC = () => {
               )}
 
               {!isWelcomeConversation && !pendingApproval && isShowScrollBtn &&
-                <div className="chatScrollBottom" onClick={() => {
-                  scrollToBottom('smooth')
-                  setIsShowScrollBtn(false)
-                }}>
+                <div className="chatScrollBottom" onClick={() => scrollToBottom('smooth')}>
                   <ArrowDownIcon className="chatScrollBottomIcon" />
                 </div>}
             </div>
