@@ -25,6 +25,14 @@ tools:
   grep: auto
   read_file_lines: auto
 
+  # ---------- the web: read-only egress, so nothing to approve ----------
+  # These run in the harness, not the container, and can only issue a GET to a
+  # public address; pointing one at a private or loopback host is refused outright
+  # rather than offered for approval, so a confirm here would only add a dialog to
+  # a request that cannot succeed.
+  web_search: auto
+  web_fetch: auto
+
   # ---------- writing needs a path check, not a human ----------
   write_file:
     level: rule

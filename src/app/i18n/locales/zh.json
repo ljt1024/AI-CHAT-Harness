@@ -498,6 +498,8 @@
   "trace.title": "处理内容：{title}",
   "trace.waiting": "等待执行数据…",
   "trace.weather": "高德天气",
+  "trace.webFetch": "网页读取",
+  "trace.webSearch": "网页搜索",
   "trace.writeFile": "文件写入",
   "trace.writer": "写作智能体",
   "trace.written": "已生成并写入文件：{file}"

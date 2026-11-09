@@ -14,7 +14,7 @@ class SandboxTool:
         self.permission = "rule" if name in {"write_file", "run_command"} else "auto"
         self.workspace = sandbox.workspace
         if name == "run_command":
-            self.description = "Execute a shell command automatically inside the isolated, offline /workspace Python 3.12 container, unless this agent explicitly requires approval. This cannot access the host filesystem or network. Python standard library is available; Node.js, npm and browsers are not installed. Do not repeatedly attempt unavailable runtimes or denied actions; report checks you cannot perform."
+            self.description = "Execute a shell command automatically inside the isolated /workspace Python 3.12 container, unless this agent explicitly requires approval. The container has no network and cannot read the host filesystem; when this agent carries web_search or web_fetch, those run outside the container and are the way to reach the internet -- do not try curl or pip install to get there. Python standard library is available; Node.js, npm and browsers are not installed. Do not repeatedly attempt unavailable runtimes or denied actions."
             self.schema = {"type": "object", "properties": {"command": {"type": "string", "maxLength": 2000}},
                            "required": ["command"], "additionalProperties": False}
         else:

@@ -42,6 +42,7 @@ from agentforge.tools.ask import AskUserTool
 from agentforge.tools.base import ToolRegistry
 from agentforge.tools.fs import FileTool, Workspace
 from agentforge.tools.shell import ShellTool
+from agentforge.tools.web import WEB_TOOL_MAP, WEB_TOOLS
 from agentforge.sandbox.docker_runner import DockerRunner, SandboxUnavailable
 from agentforge.sandbox.pool import SandboxPool
 from agentforge.sandbox.tools import SandboxTool
@@ -261,6 +262,8 @@ def create_app(settings=None, store=None, gateway=None):
             registry.register(FileTool(workspace, name))
         registry.register(ShellTool(workspace))
         registry.register(AskUserTool())
+        for tool in WEB_TOOLS:
+            registry.register(tool())
         for name in SKILL_TOOL_NAMES:
             registry.register(SkillTool(skill_manager, name))
         return registry
@@ -316,8 +319,9 @@ def create_app(settings=None, store=None, gateway=None):
         return bus, True
 
     default = AgentDefinition(id="default", name="AgentForge",
-        description="通用助手：可以读写工作区文件、运行受限命令、按需加载技能。",
-        tools=["read_file", "write_file", "grep", "glob", "run_command", "ask_user"])
+        description="通用助手：可以读写工作区文件、运行受限命令、搜索并读取网页、按需加载技能。",
+        tools=["read_file", "write_file", "grep", "glob", "run_command", "ask_user",
+               "web_search", "web_fetch"])
 
     @asynccontextmanager
     async def lifespan(app):
@@ -1372,6 +1376,13 @@ def create_app(settings=None, store=None, gateway=None):
                         # even when every other tool is redirected into the sandbox.
                         if name == AskUserTool.name:
                             registry.register(AskUserTool())
+                            continue
+                        # The web tools reach the internet from the harness, not
+                        # from the container: the sandbox has no route out and is
+                        # not getting one, so redirecting these into it would only
+                        # produce a DNS failure dressed up as a tool result.
+                        if name in WEB_TOOL_MAP:
+                            registry.register(WEB_TOOL_MAP[name]())
                             continue
                         if name not in {tool.name for tool in remote} | set(SKILL_TOOL_NAMES):
                             registry.register(SandboxTool(pool.runner, lease.sandbox, name,

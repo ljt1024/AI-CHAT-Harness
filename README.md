@@ -157,8 +157,22 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 | --- | --- |
 | 文件 | `read_file`、`write_file`、`grep`、`glob`（限定在会话工作区，阻止凭据路径与 shell 语法） |
 | 命令 | `run_command`（Docker 沙箱内执行，超时与 PID 受限） |
+| 联网 | `web_search`、`web_fetch`（在**宿主进程**里执行，容器仍然断网，见下） |
 | 技能 | `list_skills`、`load_skill`、`install_skill`、`delete_skill` |
 | MCP | 通过 Streamable HTTP 注册外部服务，工具按命名空间暴露 |
+
+#### 联网：搜索与抓取（ADR-0024）
+
+沙箱默认断网，这点没变——它跑的是模型写的代码，给这段代码一张网卡是另一类信任问题。联网因此是**宿主进程的能力**，以两个窄工具暴露给模型：
+
+- `web_search`：按查询语言选引擎（中文走 360，其余走 Bing 的 RSS 输出），另一个作兜底。结果会丢掉与查询词毫无交集的条目——Bing 对部分中文查询会返回“关于中国”的百科页，那种结果看起来像答案，必须挡掉。
+- `web_fetch`：抓一个公开网页并转成可读文本，脚本与样式剔除，非文本类型直接拒绝。
+
+两道闸门管住“公开地址”这件事，靠判定而不是假设：URL 与**每一跳重定向**都会重新解析，只放行 `is_global` 为真的地址（回环、内网、链路本地含 169.254.169.254、CGNAT、保留段一次性排除）；只走 http/https，URL 里不许带凭据，`trust_env=False`（服务上的 HTTP 代理不能悄悄成为这些请求的出口），边下边计数封顶 2MB，15 秒超时，只收文本类型。
+
+两个工具都是 `auto` 权限：给一个只读 GET 加确认弹窗，会把“确认”训练成习惯性点击，真正要紧的闸门就没人看了。隔离的会话里它们是唯一不进容器的工具（`api.py` 的 `WEB_TOOL_MAP` 分支），否则模型会“拥有”一个只返回 DNS 失败的工具。
+
+已知取舍：搜索是抓页面而不是调 API，有验证码与改版风险（360 侧做了 1 秒间隔与 5 分钟缓存）；`web_fetch` 理论上能把工作区内容塞进查询串带出去——任何出网路径都有这个性质，记录里能看到 URL，真要收紧改一条策略即可。升级路径是把同一个工具后端换成搜索 API（博查 / Tavily / Serper），解析函数是纯函数，已有测试覆盖。
 
 ### 会话文件系统（上传 / 下载）
 
@@ -325,14 +339,14 @@ Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验�
 - **沙箱按「会话」隔离，租约再绑定到账号**：每个会话独占一个容器与一个工作区目录，容器只挂载自己的目录，所以会话之间（含不同账号、不同访客）互不可见。租约现在带 `owner`：拿别人的会话 id 也认领不到那台容器和那批文件，池直接拒绝；`/api/sandbox/exec` 的一次性容器同样按调用者记账；每账号同时最多 `SANDBOX_MAX_PER_OWNER`（默认 4）个沙箱，避免一个人占满整池。工作区目录仍是 `workspaces/sandboxes/<sandbox-id>` 扁平存放——预热容器在认领前就已经挂好了目录，事后搬动会让它继续写进已删除的 inode；隔离靠租约而不是路径（见 [ADR-0016](docs/adr/0016-sandbox-lease-ownership.md)）。T15.A3 剩余的按用户目录、MCP 凭证加密与迁移演练尚未做。
 - 受限工具不等于 Docker 安全边界，真正隔离由沙箱提供。
 - **自动重试不是万能兜底**：只有「一个 token 都还没吐出来」的失败会被重试，所以服务商在回答中途掐断连接时，用户看到的是半截答案加一颗「重试」按钮，而不是自动续写——续写需要重放整轮，代价和语义都不一样（ADR-0019）。重试预算按**每次模型调用**计，不是按轮次计：一个十步的智能体任务最多会重试十次，限流严重时单轮耗时会随之上升。
-- 尚未提供通用联网搜索；命令执行只在**离线** Docker 沙箱内进行，不能访问外网。远程 MCP 是唯一出网路径：它不进沙箱，在宿主网络里、带着服务令牌调用，所以其风险由「远端注解 + 审批」承担，而不是由沙箱承担。
+- **联网只发生在宿主进程，不在容器里**：`web_search` / `web_fetch` 由 harness 发请求、带地址校验，命令执行仍然在离线沙箱内、`curl` 依然不通。远程 MCP 与这两个工具都不进沙箱，风险由“地址校验 + 审批”承担，而不是由沙箱承担（ADR-0024）。
 - 产物预览为净化环境，交互脚本只在下载后的文件中运行。
 
 ## 文档索引
 
 - [实现与验收记录](docs/IMPLEMENTATION.md) · [待办与决策](NOTES.md)
 - [技能与 MCP 能力说明](docs/CAPABILITIES.md)
-- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md) · [0017 手机号注册与短信](docs/adr/0017-phone-signup-and-sms-codes.md) · [0018 邮箱注册与验证码邮件](docs/adr/0018-email-signup-and-smtp-codes.md) · [0019 模型调用重试](docs/adr/0019-model-call-retries.md) · [0020 会话文件系统](docs/adr/0020-conversation-file-system.md) · [0021 PDF 预览交给浏览器](docs/adr/0021-pdf-viewer-is-the-browser.md) · [0022 PDF 由 pdf.js 自绘](docs/adr/0022-pdf-pages-are-drawn-by-pdfjs.md) · [0023 pdf.js worker 按版本寻址](docs/adr/0023-pdfjs-worker-url-is-versioned.md)
+- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md) · [0017 手机号注册与短信](docs/adr/0017-phone-signup-and-sms-codes.md) · [0018 邮箱注册与验证码邮件](docs/adr/0018-email-signup-and-smtp-codes.md) · [0019 模型调用重试](docs/adr/0019-model-call-retries.md) · [0020 会话文件系统](docs/adr/0020-conversation-file-system.md) · [0021 PDF 预览交给浏览器](docs/adr/0021-pdf-viewer-is-the-browser.md) · [0022 PDF 由 pdf.js 自绘](docs/adr/0022-pdf-pages-are-drawn-by-pdfjs.md) · [0023 pdf.js worker 按版本寻址](docs/adr/0023-pdfjs-worker-url-is-versioned.md) · [0024 联网是宿主能力](docs/adr/0024-web-access-is-a-harness-capability.md)
 
 ## 常见问题
 

@@ -498,6 +498,8 @@
   "trace.title": "Content: {title}",
   "trace.waiting": "Waiting for execution data…",
   "trace.weather": "AMap weather",
+  "trace.webFetch": "Web page read",
+  "trace.webSearch": "Web search",
   "trace.writeFile": "File write",
   "trace.writer": "Writing agent",
   "trace.written": "Generated and saved file: {file}"
