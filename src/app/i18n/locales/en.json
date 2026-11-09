@@ -283,6 +283,7 @@
   "input.stop": "Stop generating",
   "input.thinkingLabel": "Thinking",
   "input.upload": "Upload file",
+  "input.uploadSignIn": "Sign in to attach files",
   "input.uploadError": "File upload failed. Please retry.",
   "input.uploadTooLarge": "That file is over {size} MB. Compress or split it first.",
   "input.uploadTypeError": "That file type is not accepted: {name}. Documents, data, images and .zip only.",

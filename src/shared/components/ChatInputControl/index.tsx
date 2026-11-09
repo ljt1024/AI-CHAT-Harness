@@ -34,6 +34,9 @@ interface ChatInputControlProps {
   onSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
   onStopSSE: () => void;
   supportsFileUpload?: boolean;
+  /** The model could read a file, but this reader has to sign in before uploading one. */
+  requiresSignIn?: boolean;
+  onRequestSignIn?: () => void;
   imageOnlyUpload?: boolean;
   imageAccept?: string;
   /** Extensions the workspace accepts when the file is data, not an image. */
@@ -60,6 +63,8 @@ const ChatInputControl: React.FC<ChatInputControlProps> = ({
   onSubmit,
   onStopSSE,
   supportsFileUpload = false,
+  requiresSignIn = false,
+  onRequestSignIn,
   imageOnlyUpload = false,
   imageAccept,
   fileAccept,
@@ -85,6 +90,12 @@ const ChatInputControl: React.FC<ChatInputControlProps> = ({
 
   const onClickUpload = () => {
     if (!supportsFileUpload || isLoading || isUploadingFile) return
+    // A visitor taps the paperclip and gets the sign-in panel, not a file picker
+    // whose upload the server would refuse with a 401.
+    if (requiresSignIn) {
+      onRequestSignIn?.()
+      return
+    }
     fileInputRef.current?.click()
   }
 
@@ -180,7 +191,10 @@ const ChatInputControl: React.FC<ChatInputControlProps> = ({
                   className={`input-attach ${isUploadingFile ? 'is-uploading' : ''}`.trim()}
                   onClick={onClickUpload}
                   disabled={isLoading || isUploadingFile}
-                  title={isUploadingFile ? t('input.uploading') : t('input.upload')}
+                  title={isUploadingFile
+                    ? t('input.uploading')
+                    : requiresSignIn ? t('input.uploadSignIn') : t('input.upload')}
+                  aria-label={requiresSignIn ? t('input.uploadSignIn') : t('input.upload')}
                 >
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>

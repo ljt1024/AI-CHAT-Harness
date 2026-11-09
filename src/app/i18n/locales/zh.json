@@ -283,6 +283,7 @@
   "input.stop": "停止生成",
   "input.thinkingLabel": "深度思考",
   "input.upload": "上传文件",
+  "input.uploadSignIn": "登录后可上传文件",
   "input.uploadError": "文件上传失败，请重试",
   "input.uploadTooLarge": "文件超过 {size} MB，请压缩或拆分后再上传。",
   "input.uploadTypeError": "不支持这个文件类型：{name}。可上传文档、数据、图片与 zip 压缩包。",

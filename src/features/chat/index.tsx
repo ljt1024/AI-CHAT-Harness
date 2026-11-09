@@ -237,8 +237,11 @@ const ChatAI: React.FC = () => {
   };
   // Files are read by tools inside the conversation's workspace, so the
   // affordance follows tool support and a real account, not the model's
-  // native file API (which DeepSeek does not have).
-  const canAttachFiles = Boolean(user) && selectedModel?.supportsTools !== false;
+  // native file API (which DeepSeek does not have). Visibility and permission
+  // are separate: the paperclip shows whenever the model can read a file, and a
+  // visitor who taps it is asked to sign in rather than finding nothing there.
+  const modelReadsFiles = selectedModel?.supportsTools !== false;
+  const canAttachFiles = Boolean(user) && modelReadsFiles;
   // A reader attaches the file before writing the question, but the conversation
   // id is minted by the first send. Attaching therefore starts the conversation
   // the same way sending does, instead of refusing until something is typed.
@@ -262,7 +265,8 @@ const ChatAI: React.FC = () => {
     sessionId: activeSessionId || '',
     // Files only mean something when the run has tools to read them and an
     // account to own them: an anonymous owner id is free to mint, so the server
-    // refuses uploads from a visitor and the affordance stays out of their way.
+    // refuses uploads from a visitor. The button stays visible for them; this
+    // flag is what keeps the list request and the upload itself off the wire.
     enabled: canAttachFiles,
     isLoading,
     ensureSession: ensureConversation
@@ -884,7 +888,9 @@ const ChatAI: React.FC = () => {
                       isLoading={isLoading}
                       contextTokens={activeContextUsage?.tokens}
                       contextWindow={activeContextUsage?.window}
-                      supportsFileUpload={canAttachFiles}
+                      supportsFileUpload={modelReadsFiles}
+                      requiresSignIn={!user}
+                      onRequestSignIn={() => askToSignIn('sign_in')}
                       fileAccept={UPLOAD_ACCEPT}
                       imageOnlyUpload={false}
                       imageAccept={selectedModel?.imageAccept}
@@ -944,7 +950,9 @@ const ChatAI: React.FC = () => {
                   isLoading={isLoading}
                   contextTokens={activeContextUsage?.tokens}
                   contextWindow={activeContextUsage?.window}
-                  supportsFileUpload={canAttachFiles}
+                  supportsFileUpload={modelReadsFiles}
+                  requiresSignIn={!user}
+                  onRequestSignIn={() => askToSignIn('sign_in')}
                   fileAccept={UPLOAD_ACCEPT}
                   imageOnlyUpload={false}
                   imageAccept={selectedModel?.imageAccept}
