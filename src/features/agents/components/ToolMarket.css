@@ -1,0 +1,229 @@
+.market {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.market-head h2 {
+  margin: 0 0 4px;
+  font-family: var(--font-display);
+  font-size: 18px;
+}
+
+.market-head p {
+  margin: 0;
+  color: var(--text-muted-color);
+  font-size: 13px;
+}
+
+.market-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.market-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-color);
+  box-shadow: var(--card-shadow);
+}
+
+.market-card header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.market-card h3 {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-card p {
+  margin: 0;
+  min-height: 38px;
+  color: var(--text-muted-color);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.market-card footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 6px;
+}
+
+.market-meta {
+  color: var(--text-muted-color);
+  font-size: 12px;
+}
+
+.market-tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--button-ghost-bg);
+  color: var(--text-muted-color);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.market-tag--warn {
+  border-color: var(--warning-color, var(--border-strong));
+  color: var(--warning-color, var(--text-color));
+}
+
+.market-docs {
+  color: var(--secondary-color);
+  font-size: 12px;
+  align-self: flex-start;
+}
+
+.market-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.market-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--border-color);
+  background: var(--surface-color);
+}
+
+.market-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.market-row-main small {
+  color: var(--text-muted-color);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.market-row-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.market-row-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.market-manual summary {
+  cursor: pointer;
+  color: var(--text-muted-color);
+  font-size: 13px;
+}
+
+.market-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+/* The submit is a button in a grid of inputs, so it inherits the tallest row.
+   Sitting on the text baseline instead keeps it the same height as the fields. */
+.market-form button {
+  align-self: end;
+  justify-self: start;
+  padding: 8px 18px;
+}
+
+.market-card footer .agent-button:disabled {
+  background: var(--button-ghost-bg);
+  color: var(--text-muted-color);
+  border-color: var(--border-color);
+  cursor: default;
+}
+
+.market-form label,
+.market-paste,
+.market-token {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-muted-color);
+  font-size: 12px;
+}
+
+.market-form input,
+.market-paste textarea,
+.market-token input {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-color);
+  background: var(--panel-bg);
+  color: var(--text-color);
+  font-family: var(--font-body);
+  font-size: 13px;
+}
+
+.market-token {
+  margin-top: 10px;
+}
+
+/* A failed registration is reported where the account is, not where the list is:
+   the manual form sits at the bottom of the page, so a banner at the top would
+   scroll out of sight exactly when it is needed. */
+.market-error {
+  position: sticky;
+  top: 8px;
+  z-index: 3;
+  align-self: flex-start;
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--danger-color);
+  background: var(--surface-color);
+  color: var(--danger-color);
+  font-size: 13px;
+}
+
+.market-hint {
+  margin: 0;
+  color: var(--text-muted-color);
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .market-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .market-row-actions {
+    justify-content: flex-end;
+  }
+}

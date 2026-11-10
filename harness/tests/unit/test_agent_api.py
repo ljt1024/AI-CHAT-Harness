@@ -32,8 +32,11 @@ async def service(tmp_path):
     # The create path refuses an unregistered provider, so the fixture registers
     # the one the browser offers.
     gateway.register("deepseek", Answers())
+    # The test MCP service is a local process on loopback, which is exactly the
+    # case `mcp_allow_private` exists for.
     app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD,
-                              agentforge_workspace=tmp_path, sandbox_warm_size=0), store, gateway)
+                              agentforge_workspace=tmp_path, sandbox_warm_size=0,
+                              mcp_allow_private=True), store, gateway)
     async with app.router.lifespan_context(app):
         await app.state.auth.create_user(SECOND_USER, TEST_PASSWORD)
         yield app, store

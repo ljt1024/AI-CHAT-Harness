@@ -11,7 +11,7 @@ from urllib.parse import quote
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, StrictBool
+from pydantic import BaseModel, Field, StrictBool, ValidationError
 
 from agentforge.config import Settings
 from agentforge.artifacts import ArtifactEventBus
@@ -34,8 +34,11 @@ from agentforge.policy import InterventionPolicy
 from agentforge.prompts import with_response_language
 from agentforge.store import MongoDBStore
 from agentforge import email_address
+from agentforge import netguard
 from agentforge import phone as phone_number
+from agentforge import secrets_box
 from agentforge import session_files
+from agentforge.catalog import InstallRequest as CatalogInstall, parse_catalog, public_item
 from agentforge.mail import build_mailer
 from agentforge.sms import build_sender
 from agentforge.tools.ask import AskUserTool
@@ -321,6 +324,23 @@ def create_app(settings=None, store=None, gateway=None):
         finished_runs.move_to_end(session_id)
         return bus, True
 
+    async def encrypt_stored_tokens():
+        """Rewrite tokens written before they were encrypted.
+
+        Idempotent through the marker, so it is a no-op after the first start. A
+        row it cannot recover is a key the operator changed, which the read path
+        reports rather than silently treating as "no token".
+        """
+        migrated = 0
+        async for row in store.db.mcp_servers.find({"token": {"$exists": True}}):
+            token = row.get("token")
+            if isinstance(token, str) and token and not secrets_box.cipher().is_encrypted(token):
+                await store.db.mcp_servers.update_one(
+                    {"_id": row["_id"]}, {"$set": {"token": secrets_box.encrypt(token)}})
+                migrated += 1
+        if migrated:
+            logger.info("Encrypted %d stored MCP token(s)", migrated)
+
     default = AgentDefinition(id="default", name="AgentForge",
         description="通用助手：可以读写工作区文件、运行受限命令、搜索并读取网页、查询商品价格、按需加载技能。",
         tools=["read_file", "write_file", "grep", "glob", "run_command", "ask_user",
@@ -331,6 +351,12 @@ def create_app(settings=None, store=None, gateway=None):
         app.state.ready = False
         try:
             await store.setup()
+            # The cipher has to exist before anything writes a token: the startup
+            # catalogue below writes them, and rows written by an older version
+            # are rewritten once, here.
+            secrets_box.configure(settings.agentforge_workspace,
+                                  settings.mcp_secret_key.get_secret_value())
+            await encrypt_stored_tokens()
             await pool.start()
             await auth.setup()
             await auth.prune()
@@ -391,6 +417,7 @@ def create_app(settings=None, store=None, gateway=None):
             planted = current_user.set(operator) if operator else None
             try:
                 await load_mcp_config(settings.mcp_config)
+                await load_mcp_catalog(settings.mcp_catalog)
             finally:
                 if planted is not None:
                     current_user.reset(planted)
@@ -1087,10 +1114,26 @@ def create_app(settings=None, store=None, gateway=None):
         servers = await store.list("mcp_servers")
         return {"code": 200, "data": [public_server(server) for server in servers]}
 
-    async def save_server(request: MCPServerRequest):
-        """Discover once and store. The token stays in the database: nothing
-        that leaves this endpoint contains it, and neither does anything printed."""
+    async def save_server(request: MCPServerRequest, allow_private: bool | None = None):
+        """Discover once and store.
+
+        Two properties belong to this boundary rather than to its callers, so a
+        pasted config and a catalogue install cannot diverge: the address is
+        checked before anything dials it, and the token is encrypted before it
+        reaches the database. Nothing that leaves here contains the token, and
+        neither does anything printed.
+        """
+        trusted = settings.mcp_allow_private if allow_private is None else allow_private
+        try:
+            private = await netguard.assert_public(request.url, allow_private=trusted)
+        except netguard.BlockedAddress as exc:
+            logger.warning("mcp registration refused id=%s url=%s reason=%s",
+                           request.id, mask_url(request.url), exc)
+            raise HTTPException(422, f"This deployment does not dial that address: {exc}") from None
         record = request.model_dump(exclude_none=True, exclude={"type", "headers"})
+        # Recorded rather than re-derived later: the page labels the row with it,
+        # and a name can start resolving somewhere else after it was registered.
+        record["private"] = private
         existing = await store.get("mcp_servers", request.id)
         if request.enabled is None:
             # A refresh (same URL, new token) must not resurrect a server the
@@ -1107,10 +1150,11 @@ def create_app(settings=None, store=None, gateway=None):
                     "service, supply the token from the same account that deployed it.") from None
             raise HTTPException(502, "MCP discovery failed. Check the URL and the Streamable "
                 "HTTP transport.") from None
-        server = await store.put("mcp_servers", {**record, "tools": [
+        stored = {**record, "token": secrets_box.encrypt(record.get("token"))}
+        server = await store.put("mcp_servers", {**stored, "tools": [
             {"name": tool.name, "description": tool.description, "schema": tool.schema} for tool in tools]})
-        logger.info("mcp server registered id=%s tools=%d token=%s", request.id,
-                    len(tools), "yes" if record.get("token") else "no")
+        logger.info("mcp server registered id=%s tools=%d token=%s private=%s", request.id,
+                    len(tools), "yes" if record.get("token") else "no", private)
         return public_server(server)
 
     async def load_mcp_config(path):
@@ -1131,8 +1175,11 @@ def create_app(settings=None, store=None, gateway=None):
         except (OSError, ValueError) as exc:
             logger.warning("mcp config ignored path=%s reason=%s", path, exc)
             return
-        outcomes = await asyncio.gather(*(save_server(request) for request in requests),
-                                        return_exceptions=True)
+        # A file in this directory is the operator's own list, so a sidecar on
+        # loopback is a legitimate entry there and nowhere else.
+        outcomes = await asyncio.gather(
+            *(save_server(request, allow_private=True) for request in requests),
+            return_exceptions=True)
         for request, outcome in zip(requests, outcomes):
             if isinstance(outcome, BaseException):
                 reason = getattr(outcome, "detail", None) or describe(outcome)
@@ -1140,6 +1187,21 @@ def create_app(settings=None, store=None, gateway=None):
             else:
                 logger.info("mcp server %s from config ready tools=%d", outcome["id"],
                             len(outcome.get("tools", [])))
+
+    async def load_mcp_catalog(path):
+        """Publish the operator's service catalogue.
+
+        A missing file is a valid state: the page then offers only what this
+        account already installed, and an operator adds entries when there is
+        something worth offering. Entries are shared rows (empty owner) because a
+        catalogue is not per-account data, and `store.scope` makes them readable
+        by everyone without making them writable.
+        """
+        items = parse_catalog(path)
+        for item in items:
+            await store.put("mcp_catalog", item.model_dump(), owner="")
+        if items:
+            logger.info("mcp catalogue published entries=%d", len(items))
 
     @app.post("/api/mcp/servers", status_code=201)
     async def register_mcp_server(request: MCPServerRequest):
@@ -1170,6 +1232,45 @@ def create_app(settings=None, store=None, gateway=None):
                 suffix += 1
                 request.id = f"{base[:18].rstrip('_')}_{suffix}"
         return {"code": 201, "data": await save_server(request)}
+
+    @app.get("/api/mcp/catalog")
+    async def list_mcp_catalog():
+        """What this deployment offers, with the rows already installed marked."""
+        ready()
+        owner_id()
+        installed = {server["id"] for server in await store.list("mcp_servers")}
+        items = await store.list("mcp_catalog")
+        return {"code": 200,
+                "data": [public_item(item, installed) for item in sorted(items, key=lambda i: i["id"])]}
+
+    @app.post("/api/mcp/catalog/{identity}/install", status_code=201)
+    async def install_from_catalog(identity: str, payload: CatalogInstall):
+        """Install a server the operator chose.
+
+        The request carries a credential and nothing else. The URL comes from the
+        catalogue row, which is the whole reason this endpoint exists: an MCP
+        registration makes the host dial an address, so the address has to be one
+        the operator picked rather than one a user typed into a page.
+        """
+        ready()
+        if is_guest(owner_id()):
+            raise HTTPException(401, "An account is required to install a server.")
+        item = await store.get("mcp_catalog", identity)
+        if item is None or item.get("owner_id") != "":
+            raise HTTPException(404, "No such catalogue entry.")
+        if not item.get("enabled", True):
+            raise HTTPException(409, "This catalogue entry is switched off.")
+        if await store.get("mcp_servers", identity):
+            raise HTTPException(409, "This server is already installed.")
+        token = (payload.token or "").strip() or None
+        if item.get("auth") == "token" and not token:
+            raise HTTPException(422, "This service needs an access token.")
+        try:
+            request = MCPServerRequest(id=identity, url=item["url"], token=token)
+        except ValidationError as exc:
+            raise HTTPException(422, exc.errors()[0]["msg"].removeprefix("Value error, ")) from None
+        return {"code": 201,
+                "data": await save_server(request, allow_private=bool(item.get("private")))}
 
     @app.delete("/api/mcp/servers/{identity}")
     async def remove_mcp_server(identity: str):

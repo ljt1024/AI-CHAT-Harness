@@ -4,6 +4,7 @@ import { useLanguage } from '@/app/providers/LanguageContext';
 import { useAuth } from '@/app/providers/AuthContext';
 import Dialog from '@/shared/components/Dialog';
 import { AgentWizard } from '@/features/agents/components/AgentWizard';
+import { ToolMarket } from '@/features/agents/components/ToolMarket';
 import { deleteAgent, fetchAgents } from '@/features/agents/api';
 import type { AgentDefinition } from '@/features/agents/types';
 import './index.css';
@@ -23,6 +24,11 @@ export default function Agents() {
   const [editor, setEditor] = useState<{ mode: 'create' | 'edit'; initial: AgentDefinition | null } | null>(null);
   const [deleting, setDeleting] = useState<AgentDefinition | null>(null);
   const [deleteError, setDeleteError] = useState('');
+  // Two views, one page: the catalogue of agents people build, and the catalogue
+  // of services those agents may call. A tab beats a second route here because
+  // "which tools does this deployment offer" is answered in the same breath as
+  // "what can I build with them".
+  const [view, setView] = useState<'agents' | 'market'>('agents');
 
   // A visitor may read the catalogue and run the shared agent, but every write
   // answers 401. Asking for an account up front beats a wizard whose catalogue
@@ -87,6 +93,18 @@ export default function Agents() {
           onClick={requireAccount(() => setEditor({ mode: 'create', initial: null }))}>{t('agents.new')}</button>
       </header>
 
+      <nav className="agents-tabs" role="tablist">
+        <button type="button" role="tab" aria-selected={view === 'agents'}
+          className={view === 'agents' ? 'agents-tab is-active' : 'agents-tab'}
+          onClick={() => setView('agents')}>{t('agents.tabAgents')}</button>
+        <button type="button" role="tab" aria-selected={view === 'market'}
+          className={view === 'market' ? 'agents-tab is-active' : 'agents-tab'}
+          onClick={() => setView('market')}>{t('agents.tabTools')}</button>
+      </nav>
+
+      {view === 'market' && <ToolMarket />}
+
+      {view === 'agents' && <>
       {error && <p className="agent-wizard-error" role="alert">{t('agents.loadFailed')} {error}</p>}
       {!user && <p className="agents-hint agents-hint--guest">{t('agents.guestHint')}</p>}
       {loading && <p className="agents-hint">{t('agents.loading')}</p>}
@@ -132,6 +150,7 @@ export default function Agents() {
       </div>
 
       <p className="agents-hint">{t('agents.sharedHint')}</p>
+      </>}
 
       <Dialog isOpen={deleting !== null} onClose={() => setDeleting(null)} title={t('agents.deleteTitle')}
         type="confirm" confirmText={t('agents.deleteConfirm')} onConfirm={() => void confirmDelete()}>

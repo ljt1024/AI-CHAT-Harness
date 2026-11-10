@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "workspace": {
+      "name": "本地工具服务",
+      "summary": "随项目启动的 MCP 服务，可读写工作区文件。属于本机回环地址，生产部署不要打开。",
+      "category": "development",
+      "url": "http://127.0.0.1:9000/mcp",
+      "auth": "none",
+      "private": true,
+      "verified": true,
+      "enabled": false
+    }
+  }
+}

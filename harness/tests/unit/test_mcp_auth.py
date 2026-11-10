@@ -30,6 +30,16 @@ PASTED = {
 PASTED_URL = PASTED["mcpServers"]["fetch"]["url"]
 
 
+@pytest.fixture(autouse=True)
+def no_external_dns(monkeypatch):
+    """Registration resolves the host before it dials it; a test must not need the
+    internet for that. A literal address is still classified for real, which is
+    what the guard tests care about."""
+    async def fake(host):
+        return [host] if host.replace(".", "").isdigit() else ["93.184.216.34"]
+    monkeypatch.setattr("agentforge.netguard.resolve", fake)
+
+
 
 def test_mask_url_hides_the_tenant_segment():
     assert mask_url(HOSTED) == "https://mcp.api-inference.modelscope.net/****/streamable_http"

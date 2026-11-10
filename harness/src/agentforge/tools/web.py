@@ -21,18 +21,17 @@ agent has to be told to do it, and the trace shows the URL.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import re
-import socket
 import time
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from html import unescape
 from html.parser import HTMLParser
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote, unquote
 
 import httpx
 
+from agentforge import netguard
 from agentforge.models import ToolResult
 
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -67,42 +66,28 @@ class WebError(Exception):
 
 
 def _assert_public(url: str) -> str:
-    """Return the URL unchanged, or raise with the reason it is not fetchable."""
-    parts = urlsplit(url)
-    if parts.scheme not in {"http", "https"}:
-        raise WebError(f"Only http and https URLs can be fetched, not {parts.scheme or 'a relative path'}.")
-    if parts.username or parts.password:
-        raise WebError("Remove the credentials from the URL; this tool does not send them.")
-    if not parts.hostname:
-        raise WebError("That URL has no host name.")
-    return url
+    """The tool-level spelling of the shape guard.
 
-
-async def _resolve(host: str) -> list[str]:
-    loop = asyncio.get_running_loop()
+    `netguard` owns the rule; this wrapper exists because everything the tool
+    layer reports has to be a `WebError`, which is what the model is shown.
+    """
     try:
-        info = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise WebError(f"DNS lookup failed for {host}: {exc.strerror or exc}.") from exc
-    return sorted({entry[4][0] for entry in info})
+        return netguard.check_shape(url)
+    except netguard.BlockedAddress as exc:
+        raise WebError(str(exc)) from exc
 
 
 async def _assert_reachable(url: str) -> None:
     """Reject anything that is not a global unicast address.
 
-    ``is_global`` is the single predicate that covers loopback, RFC1918,
-    link-local (including the 169.254.169.254 metadata endpoint), CGNAT and
-    reserved space, so there is no denylist here to fall behind.
+    The decision itself lives in ``netguard``, because the MCP client has to ask
+    the same question about a URL a user typed. Only the exception type differs.
     """
     _assert_public(url)
-    host = urlsplit(url).hostname or ""
-    for address in await _resolve(host):
-        try:
-            ip = ipaddress.ip_address(address)
-        except ValueError as exc:
-            raise WebError(f"{host} resolved to an address this tool cannot classify.") from exc
-        if not ip.is_global:
-            raise WebError(f"{host} resolves to {address}, which is not a public address.")
+    try:
+        await netguard.assert_public(url)
+    except netguard.BlockedAddress as exc:
+        raise WebError(str(exc)) from exc
 
 
 async def _get(url: str) -> tuple[str, str, bytes]:

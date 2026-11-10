@@ -31,6 +31,19 @@ class Settings(BaseSettings):
     # database row with a token in it, which is a poor thing to version; a file
     # is the way to keep the list beside the code and re-apply it on restart.
     mcp_config: Path = Path("../config/mcp.json")
+    # A registered server is a URL somebody else typed, and the host process sits
+    # beside MongoDB and the cloud metadata endpoint. Loopback and RFC1918 are
+    # therefore refused at registration unless an operator says this deployment
+    # runs its own sidecar.
+    mcp_allow_private: bool = False
+    # Key for the encrypted bearer tokens in `mcp_servers`. Empty means "generate
+    # one beside the workspace", which is right for a single host and wrong for a
+    # second one, so a replica set has to set it.
+    mcp_secret_key: SecretStr = SecretStr("")
+    # The service catalogue the product page offers. A URL in here is one the
+    # operator chose, which is why installing from it cannot point the host at an
+    # address a user picked.
+    mcp_catalog: Path = Path("../config/mcp_catalog.json")
     agentforge_workspace: Path = Path("../.agentforge/workspaces")
     # Uploads are the one place where a request body is written to disk, so the
     # three limits that bound it are configuration, not constants: an operator

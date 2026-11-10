@@ -145,7 +145,12 @@ cd harness
 MCP_WORKSPACE=../.agentforge/mcp-workspace uv run python ../mcp-server/src/main.py
 ```
 
-In the panel, enter server ID `local` and URL `http://127.0.0.1:9000/mcp`, then connect.
+In the product page (**`/agents` → 工具广场 → 手动添加服务**), enter server ID `local` and
+URL `http://127.0.0.1:9000/mcp`, then connect. A loopback or RFC1918 address needs
+`MCP_ALLOW_PRIVATE=true` first: registration makes the host process dial it, so the default is
+refusal, and `config/mcp.json` (the operator's own list) is the one path that is trusted with a
+private address. The same form exists in the administration panel behind
+`VITE_SHOW_SANDBOX_UI=true`.
 Discovered names include `mcp_local__read_file` and `mcp_local__write_file`. Select the server,
 ask the agent to use a specific MCP tool, then approve its call. This also works without
 Docker mode because the selected MCP service executes externally. Its files are in its
@@ -183,8 +188,8 @@ A hosted deployment such as ModelScope hands out a ready-made block:
   "headers": {"Authorization": "Bearer <ModelScope token>"}}}}
 ```
 
-Paste it into **Skills & MCP → Paste an MCP config** and press **Import and connect**. The
-config key (`fetch`) becomes the server ID, the bearer token is folded into the stored record.
+Paste it into **工具广场 → 手动添加服务 → Paste an MCP config** and press **Import and connect**.
+The config key (`fetch`) becomes the server ID, the bearer token is folded into the stored record.
 A leading `mcp`/`mcp-` in that key is dropped, since tool names are already `mcp_<id>__<tool>`:
 `"MCP-AIFetcher"` registers as `aifetcher`, not `mcp_aifetcher`.
 Only the `Authorization` header is honoured, and re-pasting the same URL updates that row
@@ -192,9 +197,9 @@ instead of adding a duplicate, so a rotated token takes one paste.
 `POST /api/mcp/servers/import` with `{"config": "<the JSON text>"}` does the same from the
 command line. One server per paste; several entries are refused with a message.
 
-**Registering is the opt-in.** The Skills & MCP panel is a debug surface, hidden in the product
-UI because MCP tools are meant to be used by the agent on its own; set
-`VITE_SHOW_SANDBOX_UI=true` to expose it. With no server pinned on an agent definition, every
+**Registering is the opt-in.** The product entry point is `/agents → 工具广场` (ADR-0029); the
+skills half of that panel is still a debug surface, shown only with
+`VITE_SHOW_SANDBOX_UI=true`. With no server pinned on an agent definition, every
 run attaches every registered server, so a service connected once is available in any later
 conversation without a per-run picker. Two consequences worth knowing:
 
@@ -206,8 +211,28 @@ conversation without a per-run picker. Two consequences worth knowing:
 
 The token never leaves the backend: listings report `hasToken`, logs and error messages replace
 the tenant path segment with `****`, and a 401/403 during discovery is reported as a rejected
-token. Discovery times out after `MCP_DISCOVER_TIMEOUT` (30 s) and calls after
+token. It is also encrypted at rest (`enc:v1:`, Fernet, key from `MCP_SECRET_KEY` or a generated
+0600 file beside the workspace), and a row written before that existed is migrated on the next
+start. Discovery times out after `MCP_DISCOVER_TIMEOUT` (30 s) and calls after
 `MCP_CALL_TIMEOUT` (60 s); both are generous because hosted endpoints cold-start.
+
+### Catalogue
+
+A deployment can offer servers without handing users a URL field. `config/mcp_catalog.json` is
+seeded into `mcp_catalog` (shared, read-only) at startup; each entry carries name, summary,
+category, URL, `auth` (`none`, or `token` meaning each account brings its own), a `docs` link for
+getting that token, `verified`, and optionally `private`.
+
+```json
+{"servers": {"team_gateway": {"name": "团队工具网关", "url": "https://gateway.example.com/mcp",
+  "auth": "token", "docs": "https://gateway.example.com/tokens"}}}
+```
+
+Installing sends a credential and no address: the URL comes from the row. That is the security
+argument, not a UI preference — an MCP registration makes the host dial an address, so a curated
+entry cannot be turned into a probe of `127.0.0.1` or `169.254.169.254`. The resulting record is
+an ordinary `mcp_servers` row, so everything else behaves the same. An absent file is a valid
+state: the page then offers only what the account installed, plus manual entry.
 
 ## API
 
@@ -223,9 +248,15 @@ token. Discovery times out after `MCP_DISCOVER_TIMEOUT` (30 s) and calls after
 - `GET/POST /api/skills`: list/import `{name, files: {"SKILL.md": "...", ...}}`.
 - `DELETE /api/skills/{id}`: uninstall; 404 when the skill is not installed, 409 when a saved
   agent still references it, and synced `.skills/<id>` directories are removed from workspaces.
-- `GET/POST /api/mcp/servers`: list/register `{id, url, token?}` and discover tools.
+- `GET/POST /api/mcp/servers`: list/register `{id, url, token?}` and discover tools. A
+  non-public URL is 422 unless `MCP_ALLOW_PRIVATE=true`.
 - `POST /api/mcp/servers/import`: register from a pasted `{"mcpServers": {...}}` block;
   422 carries the reason the config cannot be used.
+- `GET /api/mcp/catalog`: the deployment's catalogue, each entry marked `installed` when this
+  account already has it.
+- `POST /api/mcp/catalog/{id}/install`: body is `{token?}` and nothing else; the URL is the
+  catalogue's. 404 for an unknown entry, 409 for one already installed, 422 for a missing token
+  the entry requires.
 - `DELETE /api/mcp/servers/{id}`: remove; saved agent references prevent removal.
 - `POST /api/agents/run`: accepts `skills`, `mcp_servers`, and `sandbox`. `mcp_servers` is a
   pin (must exist and answer); omitting it means every registered server is used.
@@ -238,10 +269,11 @@ signing in adopts that transcript. Everything that mutates the installation stil
 account. Resources are owner-scoped: a skill, MCP server, session, trace or artifact belongs to
 the account (or guest) that created it, and anyone else gets 404 rather than a 403 that would
 confirm
-existence. Skill import and MCP registration remain trusted administration operations: the
+existence. Skill import remains a trusted administration operation, while MCP registration is a
+product surface: the address guard and the encrypted credential are what let it be one. The
 initial account comes from `ADMIN_USER`/`ADMIN_PASSWORD`, and further accounts are created by
-an operator. Per-user workspace directories, encrypted MCP credentials and the two-browser
-acceptance run are still outstanding (T15.A3/A4).
+an operator. Per-user workspace directories and the two-browser acceptance run are still
+outstanding (T15.A3/A4).
 
 ## Verification
 

@@ -40,6 +40,38 @@
   color: var(--secondary-color);
 }
 
+.agents-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--panel-bg);
+  align-self: flex-start;
+}
+
+.agents-tab {
+  padding: 6px 18px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted-color);
+  font-family: var(--font-body);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+.agents-tab:hover {
+  color: var(--text-color);
+}
+
+.agents-tab.is-active {
+  background: var(--surface-color);
+  color: var(--text-color);
+  box-shadow: var(--card-shadow);
+}
+
 .agents-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));

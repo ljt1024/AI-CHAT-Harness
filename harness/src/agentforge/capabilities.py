@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 from pydantic import (BaseModel, Field, ValidationError, field_validator,
                       model_validator)
 
+from agentforge import secrets_box
 from agentforge.mcp_client import discover_tools
 from agentforge.redact import mask_url
 
@@ -198,7 +199,10 @@ def public_server(server: dict) -> dict:
     """
     return {"id": server["id"], "url": mask_url(server["url"]),
             "tools": server.get("tools", []), "hasToken": bool(server.get("token")),
-            "enabled": server.get("enabled", True)}
+            "enabled": server.get("enabled", True),
+            # A sidecar on loopback is a different trust story from a public
+            # endpoint, and the page has to be able to say which one this is.
+            "private": bool(server.get("private"))}
 
 
 async def run_servers(store, pinned, auto_attach: bool = True):
@@ -229,9 +233,13 @@ async def run_servers(store, pinned, auto_attach: bool = True):
 
 async def server_tools(server, discover_timeout: float | None = None,
                        call_timeout: float | None = None):
+    # The stored value is ciphertext once it has been through the API; a row that
+    # predates the encryption is still plaintext, and `decrypt` leaves it alone so
+    # a running deployment keeps working across the upgrade.
+    token = secrets_box.decrypt(server.get("token"))
     try:
         async with asyncio.timeout(discover_timeout or DISCOVER_TIMEOUT):
-            tools = await discover_tools(server["url"], server.get("token"), call_timeout)
+            tools = await discover_tools(server["url"], token, call_timeout)
     except TimeoutError:
         raise ValueError("MCP server did not answer the tool listing in time.") from None
     if len(tools) > 64:

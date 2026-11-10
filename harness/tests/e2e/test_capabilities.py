@@ -53,7 +53,7 @@ async def test_registered_mcp_is_used_by_runtime(tmp_path, mcp_service, approved
     adapter = CapabilityAdapter()
     gateway.register("deepseek", adapter)
     app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
-                              sandbox_warm_size=0), store, gateway)
+                              sandbox_warm_size=0, mcp_allow_private=True), store, gateway)
     async with app.router.lifespan_context(app):
         async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             registered = await client.post("/api/mcp/servers", json={"id": "local", "url": url})
@@ -95,7 +95,7 @@ async def test_installed_skill_respects_explicit_command_approval(tmp_path, dock
     adapter = CapabilityAdapter(skill=True)
     gateway.register("deepseek", adapter)
     app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
-                              sandbox_warm_size=0), store, gateway)
+                              sandbox_warm_size=0, mcp_allow_private=True), store, gateway)
     async with app.router.lifespan_context(app):
         async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             installed = await client.post("/api/skills", json={"name": "demo", "files": {
@@ -144,7 +144,7 @@ async def test_invalid_capabilities_fail_before_start(tmp_path):
     gateway = ModelGateway()
     gateway.register("deepseek", CapabilityAdapter())
     app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
-                              sandbox_warm_size=0), store, gateway)
+                              sandbox_warm_size=0, mcp_allow_private=True), store, gateway)
     async with app.router.lifespan_context(app):
         async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             for capability in ({"mcp_servers": ["missing"]}, {"sandbox": True, "skills": ["missing"]}):
@@ -180,7 +180,7 @@ async def test_agent_discovers_loads_and_executes_skill_without_preselection(tmp
     gateway = ModelGateway()
     gateway.register("deepseek", AutonomousSkills())
     app = create_app(Settings(_env_file=None, admin_password=TEST_PASSWORD, agentforge_workspace=tmp_path,
-                              sandbox_warm_size=0), store, gateway)
+                              sandbox_warm_size=0, mcp_allow_private=True), store, gateway)
     async with app.router.lifespan_context(app):
         async with AuthedClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             installed = await client.post("/api/skills", json={"name": "autonomous", "files": {

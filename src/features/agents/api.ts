@@ -131,3 +131,80 @@ export async function streamAgents(request: AgentRequest, onEvent: (event: Agent
     onEvent(event);
   }, event => event.type === 'done', t('error.incompleteStream'));
 }
+
+/** A server this account has installed. The URL arrives masked; the token never does. */
+export interface McpServerSummary {
+  id: string;
+  url: string;
+  hasToken: boolean;
+  enabled: boolean;
+  private?: boolean;
+  tools: { name: string }[];
+}
+
+/** An entry the deployment offers. It carries no URL: installing uses the server's. */
+export interface McpCatalogEntry {
+  id: string;
+  name: string;
+  summary: string;
+  category: string;
+  auth: 'none' | 'token';
+  docs: string;
+  verified: boolean;
+  private: boolean;
+  enabled: boolean;
+  installed: boolean;
+}
+
+export async function fetchMcpCatalog(signal?: AbortSignal): Promise<McpCatalogEntry[]> {
+  const response = await fetch(apiUrl('/mcp/catalog'), { signal, headers: languageHeaders() });
+  if (!response.ok) throw await readError(response);
+  return (await response.json()).data;
+}
+
+export async function fetchMcpServers(signal?: AbortSignal): Promise<McpServerSummary[]> {
+  const response = await fetch(apiUrl('/mcp/servers'), { signal, headers: languageHeaders() });
+  if (!response.ok) throw await readError(response);
+  return (await response.json()).data;
+}
+
+/**
+ * The catalogue is the only place an address comes from: this call sends a
+ * credential and never a URL, so a page cannot point the host at its own network.
+ */
+export async function installCatalogServer(id: string, token?: string): Promise<McpServerSummary> {
+  const response = await postJSON(`/mcp/catalog/${encodeURIComponent(id)}/install`,
+    { token: token || undefined }, languageHeaders());
+  if (!response.ok) throw await readError(response);
+  return (await response.json()).data;
+}
+
+export async function registerMcpServer(payload: {
+  id: string; url: string; token?: string;
+}): Promise<McpServerSummary> {
+  const response = await postJSON('/mcp/servers',
+    { ...payload, token: payload.token || undefined }, languageHeaders());
+  if (!response.ok) throw await readError(response);
+  return (await response.json()).data;
+}
+
+export async function importMcpServer(config: string): Promise<McpServerSummary> {
+  const response = await postJSON('/mcp/servers/import', { config }, languageHeaders());
+  if (!response.ok) throw await readError(response);
+  return (await response.json()).data;
+}
+
+export async function setMcpServerEnabled(id: string, enabled: boolean): Promise<void> {
+  const response = await fetch(apiUrl(`/mcp/servers/${encodeURIComponent(id)}`), {
+    method: 'PATCH',
+    headers: { ...languageHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!response.ok) throw await readError(response);
+}
+
+export async function deleteMcpServer(id: string): Promise<void> {
+  const response = await requestJSON('DELETE', `/mcp/servers/${encodeURIComponent(id)}`,
+    undefined, languageHeaders());
+  if (!response.ok) throw await readError(response);
+}
