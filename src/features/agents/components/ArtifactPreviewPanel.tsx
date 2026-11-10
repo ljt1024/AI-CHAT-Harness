@@ -4,6 +4,7 @@ import { DocumentPreview, DraftContent, HtmlPreview, SheetPreview, SlidePreview,
 import { downloadAgentArtifact } from '../api';
 import { formatLabel, previewKind } from '../preview';
 import type { AgentArtifact } from '../types';
+import { PreviewTabBar } from './PreviewTabBar';
 import { getFileDownloadUrl } from '@/shared/utils/fileDownloads';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import './ArtifactPreviewPanel.css';
@@ -12,10 +13,14 @@ import './ArtifactPreviewPanel.css';
 // it loads as its own chunk the first time one is.
 const PdfPreview = lazy(() => import('./PdfPreview'));
 
-export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }: {
+export function ArtifactPreviewPanel({ artifact, tabs, available, onSelect, onCloseTab,
+  onOpenFile, onClose }: {
   artifact: AgentArtifact;
-  artifacts: AgentArtifact[];
-  onSelect: (artifact: AgentArtifact) => void;
+  tabs: AgentArtifact[];
+  available: AgentArtifact[];
+  onSelect: (fileId: string) => void;
+  onCloseTab: (fileId: string) => void;
+  onOpenFile: (artifact: AgentArtifact) => void;
   onClose: () => void;
 }) {
   const { t } = useLanguage();
@@ -104,22 +109,21 @@ export function ArtifactPreviewPanel({ artifact, artifacts, onSelect, onClose }:
   };
 
   return <aside ref={panelRef} className={`artifact-preview${isFullscreen || fullscreenFallback ? ' is-fullscreen' : ''}`} aria-label={t('preview.title')}>
+    {/* The strip lives inside the pane above the split threshold and is lifted
+        to the top of the workspace below it; `ArtifactPreviewPanel.css` decides
+        which of the two copies is on screen. */}
+    <PreviewTabBar className="artifact-preview-tabbar" tabs={tabs} activeId={artifact.fileId}
+      available={available} onSelect={onSelect} onCloseTab={onCloseTab} onOpenFile={onOpenFile} />
     <header className="artifact-preview-head">
       <div><span className="artifact-preview-label">{t('preview.title')} · {formatLabel(artifact)}</span><strong>{artifact.fileName}</strong></div>
       <div className="artifact-preview-head-actions">
+        {!draft && <a className="artifact-preview-download" href={getFileDownloadUrl(artifact.fileId)} download={artifact.fileName} title={t('preview.download')}>{t('preview.download')}</a>}
         <button type="button" onClick={() => void toggleFullscreen()} aria-label={isFullscreen || fullscreenFallback ? t('preview.exitFullscreen') : t('preview.openFullscreen')} title={isFullscreen || fullscreenFallback ? t('preview.exitFullscreen') : t('preview.openFullscreen')}>
           {isFullscreen || fullscreenFallback ? '↙' : '⛶'}
         </button>
         <button type="button" onClick={onClose} aria-label={t('preview.close')}>×</button>
       </div>
     </header>
-    <div className="artifact-preview-toolbar">
-      <select aria-label={t('preview.selectFile')} value={artifact.fileId} onChange={event => {
-        const selected = artifacts.find(file => file.fileId === event.target.value);
-        if (selected) onSelect(selected);
-      }}>{artifacts.map(file => <option key={file.fileId} value={file.fileId}>{file.fileName}</option>)}</select>
-      {!draft && <a href={getFileDownloadUrl(artifact.fileId)} download={artifact.fileName}>{t('preview.download')}</a>}
-    </div>
     {draft && <div className={`artifact-preview-status artifact-preview-status--${draft.status}`} role="status">
       <span>{draft.status === 'generating' ? t('preview.generating') : draft.status === 'saving' ? t('preview.saving') : draft.status === 'cancelled' ? t('preview.cancelled') : t('preview.failed')}</span>
       <small>{t('preview.unsaved')}</small>

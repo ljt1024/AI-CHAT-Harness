@@ -274,7 +274,7 @@ curl -s localhost:8000/api/mcp/servers/import -H 'content-type: application/json
 
 - **思考 / 行动 / 观察活动条**：运行中叙述当前阶段（正在思考 → 正在调用 *工具* → 正在生成回答 → 已完成 · N 步 · X 秒），步骤以阶段徽章 + 工具名单行呈现，完成后自动折叠。
 - **稳定的流式渲染**：已完成的段落按块 memo 渲染，未闭合段落以纯文本增长并带光标，按 ~30fps 合帧；只在用户停留在底部时跟随滚动。
-- **产物预览**：≥1101px 时自动打开；窄视口改为手动点开，避免全屏预览遮住整段会话。
+- **产物预览是多标签的**：每打开一个文件占一个标签，可切换、可单独关闭，关掉最后一个才收起面板；标签栏上的 `+` 列出这轮产生但还没打开的其余文件。≥1101px 时面板与对话并排、自动打开；窄视口下预览变成工作区的**另一个视图**而不是覆盖层，标签栏里因此多一个「聊天」项用来切回——打开文件不再把整段会话压在底下（[ADR-0028](docs/adr/0028-preview-opens-as-tabs.md)）。
 - **上下文容量环**：输入框右侧常驻一枚环形指示器，显示当前会话已占用上下文占窗口的百分比——70% 起转为提醒色、90% 起转为告警色，与运行时触发压缩的阈值一致。数值取自后端的真实估算，刷新页面从服务端恢复，不会从 0 重新长出来。
 - **失败可重试**：上游限流（`429`）、`5xx` 或连接中断由网关自动重试（`MODEL_RETRIES`，指数退避，认服务商的 `Retry-After`），只在**还没有吐出任何内容**之前重试——已经流出的回答不会被重放成两份（[ADR-0019](docs/adr/0019-model-call-retries.md)）。重试全部失败时，气泡里写明是哪一类失败（限流 / 余额 / 密钥 / 连接中断），并保留一颗「重试」按钮：点一下就会丢掉这条失败回答、用同一条提问重发，不需要重新打字，也不额外消耗一轮访客额度。
 - 中英文双语，明暗主题，Markdown 与代码复制。
@@ -360,7 +360,7 @@ Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验�
 
 - [实现与验收记录](docs/IMPLEMENTATION.md) · [待办与决策](NOTES.md)
 - [技能与 MCP 能力说明](docs/CAPABILITIES.md)
-- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md) · [0017 手机号注册与短信](docs/adr/0017-phone-signup-and-sms-codes.md) · [0018 邮箱注册与验证码邮件](docs/adr/0018-email-signup-and-smtp-codes.md) · [0019 模型调用重试](docs/adr/0019-model-call-retries.md) · [0020 会话文件系统](docs/adr/0020-conversation-file-system.md) · [0021 PDF 预览交给浏览器](docs/adr/0021-pdf-viewer-is-the-browser.md) · [0022 PDF 由 pdf.js 自绘](docs/adr/0022-pdf-pages-are-drawn-by-pdfjs.md) · [0023 pdf.js worker 按版本寻址](docs/adr/0023-pdfjs-worker-url-is-versioned.md) · [0024 联网是宿主能力](docs/adr/0024-web-access-is-a-harness-capability.md) · [0025 跟随由输入释放](docs/adr/0025-follow-is-released-by-input.md) · [0026 工作区属于会话](docs/adr/0026-a-workspace-belongs-to-the-conversation.md) · [0027 比价读商品库](docs/adr/0027-a-price-lookup-reads-the-catalogue.md)
+- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md) · [0017 手机号注册与短信](docs/adr/0017-phone-signup-and-sms-codes.md) · [0018 邮箱注册与验证码邮件](docs/adr/0018-email-signup-and-smtp-codes.md) · [0019 模型调用重试](docs/adr/0019-model-call-retries.md) · [0020 会话文件系统](docs/adr/0020-conversation-file-system.md) · [0021 PDF 预览交给浏览器](docs/adr/0021-pdf-viewer-is-the-browser.md) · [0022 PDF 由 pdf.js 自绘](docs/adr/0022-pdf-pages-are-drawn-by-pdfjs.md) · [0023 pdf.js worker 按版本寻址](docs/adr/0023-pdfjs-worker-url-is-versioned.md) · [0024 联网是宿主能力](docs/adr/0024-web-access-is-a-harness-capability.md) · [0025 跟随由输入释放](docs/adr/0025-follow-is-released-by-input.md) · [0026 工作区属于会话](docs/adr/0026-a-workspace-belongs-to-the-conversation.md) · [0027 比价读商品库](docs/adr/0027-a-price-lookup-reads-the-catalogue.md) · [0028 预览是标签而不是覆盖](docs/adr/0028-preview-opens-as-tabs.md)
 
 ## 常见问题
 
@@ -390,7 +390,7 @@ Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验�
 | 多智能体协作 | 主智能体按需委派规划、研究、写作角色 |
 | 会话记忆 | LangGraph SQLite checkpoint、成功轮次持久化、历史摘要与近期上下文组合 |
 | 工具 | 计算、时间、中国天气，以及 PDF、Excel、PPT、HTML 文件生成 |
-| 文件预览 | 左侧执行、右侧预览；生成草稿同步展示，完成后可下载、全屏查看和从历史重新打开 |
+| 文件预览 | 左侧执行、右侧多标签预览；生成草稿同步展示，完成后可下载、全屏查看和从历史重新打开 |
 | 图片理解 | DeepSeek 原生 Files API，以及其他视觉模型的图片 URL 输入 |
 | 文生图 | Qwen-Image-2.0，生成图片后预览与下载 |
 | 会话管理 | 浏览器本地历史、重命名、置顶、删除、JSON 导入导出、重新生成 |

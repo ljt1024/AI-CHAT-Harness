@@ -43,6 +43,10 @@
   overflow: hidden;
 }
 
+/* The pane draws its own strip beside the chat; this copy exists only for the
+   narrow layout, where the pane cannot host the way back to the conversation. */
+.chat-workspace .preview-tabbar--narrow { display: none; }
+
 .chat-workspace .messages-content {
   border: 0;
   border-radius: 0;
@@ -264,7 +268,9 @@ body.is-resizing-preview { user-select: none; }
     box-shadow: none;
   }
 
-  .chat-container--preview > .sidebar {
+  /* The sidebar steps aside only while a file view is on screen; switching back
+     to the chat has to bring it with it. */
+  .chat-container--preview:has(.chat-panels:not(.is-chat-view)) > .sidebar {
     visibility: hidden;
     pointer-events: none;
   }
@@ -275,17 +281,33 @@ body.is-resizing-preview { user-select: none; }
   /* Below this width the preview is a full-bleed overlay, not a pane. */
   .chat-workspace .preview-splitter { display: none; }
 
+  /* Below this width the preview is a view of the workspace rather than a pane
+     beside it. The strip switches between the two views, so opening a file no
+     longer parks an overlay on top of the conversation. */
+  .chat-workspace .chat-panels { flex-direction: column; }
+
+  .chat-workspace .preview-tabbar--narrow { display: flex; }
+
+  /* The pane carries its own copy of the strip above this width; showing both at
+     once would render the same tabs twice. */
+  .chat-workspace .artifact-preview-tabbar { display: none; }
+
   .chat-workspace .artifact-preview {
-    position: absolute;
-    inset: 0;
-    width: 100%;
+    position: static;
+    inset: auto;
+    width: auto;
+    flex: 1 1 auto;
+    min-height: 0;
     border: 0;
+    border-radius: 0;
+    box-shadow: none;
     background: var(--bg-color);
   }
 
-  .chat-container--preview .messages-content {
-    visibility: hidden;
-    pointer-events: none;
+  .chat-workspace .chat-panels.is-chat-view .artifact-preview { display: none; }
+
+  .chat-container--preview .chat-panels:not(.is-chat-view) .messages-content {
+    display: none;
   }
 }
 

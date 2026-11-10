@@ -23,6 +23,7 @@ import type { MessageApproval } from '@/shared/utils/localMessages';
 import { CapabilitiesPanel, type CapabilitySelection } from '@/features/agents/components/CapabilitiesPanel';
 import type { AgentArtifact } from '@/features/agents/types';
 import { ArtifactPreviewPanel } from '@/features/agents/components/ArtifactPreviewPanel';
+import { PreviewTabBar } from '@/features/agents/components/PreviewTabBar';
 import { AgentPicker } from '@/features/agents/components/AgentPicker';
 import { useAgents } from '@/features/agents/hooks/useAgents';
 import {
@@ -37,10 +38,10 @@ import { APP_NAME } from '@/shared/config/brand';
 import './chat.css';
 
 /**
- * At or below 1100px the artifact preview panel covers the whole message area
- * (chat.css marks .messages-content as visibility:hidden), so auto-opening it
- * while an artifact streams in would hide the entire conversation. Manual
- * opens from artifact cards stay allowed at any width.
+ * At or below 1100px the preview is a second view of the workspace rather than a
+ * pane beside it, so auto-opening one while an artifact streams in would swap the
+ * conversation out from under someone still reading the reply. Manual opens from
+ * artifact cards stay allowed at any width — that is a request, not a guess.
  */
 const canAutoOpenPreview = () => window.matchMedia('(min-width: 1101px)').matches;
 
@@ -59,9 +60,45 @@ const ChatAI: React.FC = () => {
   // Which stored definition runs this conversation; empty means the built-in one.
   const [selectedAgentId, setSelectedAgentId] = useState(() => localStorage.getItem(AGENT_STORAGE_KEY) || '');
   const [liveFiles, setLiveFiles] = useState<{ sessionId: string; files: AgentArtifact[] }>({ sessionId: '', files: [] });
-  const [previewSelection, setPreviewSelection] = useState<{ sessionId: string; artifact: AgentArtifact } | null>(null);
-  const setPreviewArtifact = useCallback((artifact: AgentArtifact) => {
-    setPreviewSelection({ sessionId: getSelectId() || '', artifact });
+  // Every file the reader opened, not just the one on screen: switching between a
+  // report and its stylesheet must not close the first one. `activeId` decides
+  // which tab the body renders.
+  const [openedFiles, setOpenedFiles] = useState<{ sessionId: string; tabs: AgentArtifact[]; activeId: string } | null>(null);
+  // Below the split threshold the preview replaces the chat instead of sitting
+  // beside it, so the strip needs a way back; above it this flag changes nothing.
+  const [isChatView, setIsChatView] = useState(false);
+  const openPreview = useCallback((artifact: AgentArtifact) => {
+    const sessionId = getSelectId() || '';
+    setOpenedFiles(previous => {
+      const same = previous?.sessionId === sessionId ? previous : null;
+      const existing = same ? same.tabs.findIndex(file => file.fileId === artifact.fileId) : -1;
+      if (same && existing >= 0) {
+        // The same report can be linked from several messages, so re-opening it
+        // focuses its tab instead of stacking a second copy.
+        return { ...same, tabs: same.tabs.map((file, position) => position === existing ? artifact : file),
+          activeId: artifact.fileId };
+      }
+      return { sessionId, tabs: [...(same?.tabs || []), artifact], activeId: artifact.fileId };
+    });
+    setIsChatView(false);
+  }, []);
+  const closePreviewTab = useCallback((fileId: string) => {
+    setOpenedFiles(previous => {
+      if (!previous) return previous;
+      const index = previous.tabs.findIndex(file => file.fileId === fileId);
+      if (index < 0) return previous;
+      const tabs = previous.tabs.filter(file => file.fileId !== fileId);
+      if (!tabs.length) return null;
+      // Closing the active tab hands the body to the neighbour on the right, or to
+      // the last one left when it was at the end. Never to a blank pane.
+      const activeId = previous.activeId === fileId
+        ? tabs[Math.min(index, tabs.length - 1)].fileId : previous.activeId;
+      return { ...previous, tabs, activeId };
+    });
+  }, []);
+  const selectPreviewTab = useCallback((fileId: string) => {
+    setOpenedFiles(previous => previous ? { ...previous, activeId: fileId } : previous);
+    setIsChatView(false);
   }, []);
   const [isShowScrollBtn, setIsShowScrollBtn] = useState(false)
   const [isShowShare, setIsShowShare] = useState(false)
@@ -92,8 +129,11 @@ const ChatAI: React.FC = () => {
   const composerRef = useRef<HTMLDivElement>(null);
   const approvalFocusSession = useRef<string | null>(null);
   const dispatch = useChatDispatch()
-  const previewArtifact = !pendingApproval && previewSelection?.sessionId === getSelectId() && messages.length ? previewSelection.artifact : null
-  const previewArtifacts = [...messages.flatMap(message => message.artifacts || []), ...(liveFiles.sessionId === getSelectId() ? liveFiles.files : [])]
+  const previewTabs = openedFiles?.sessionId === activeSessionId ? openedFiles : null
+  const previewArtifact = !pendingApproval && messages.length
+    ? previewTabs?.tabs.find(file => file.fileId === previewTabs.activeId) || previewTabs?.tabs[0] || null
+    : null
+  const previewArtifacts = [...messages.flatMap(message => message.artifacts || []), ...(liveFiles.sessionId === activeSessionId ? liveFiles.files : [])]
   if (previewArtifact && !previewArtifacts.some(file => file.fileId === previewArtifact.fileId)) previewArtifacts.push(previewArtifact)
   const isNewConversation = messages.length === 0 && localStorage.getItem('isNewCov') === 'true'
   const lastMessage = messages[messages.length - 1]
@@ -655,7 +695,7 @@ const ChatAI: React.FC = () => {
           const record: MessageApproval = { id: event.call_id, tool: event.tool, args: event.arguments, status: 'pending', kind, rememberable };
           assistant.approvals = [...(assistant.approvals || []).filter(item => item.id !== record.id), record];
           setApprovals(items => [...items, { sessionId, id: event.call_id, tool: event.tool, args: event.arguments, status: 'pending', kind, rememberable }]);
-          setPreviewSelection(previous => previous?.sessionId === sessionId ? null : previous);
+          setOpenedFiles(previous => previous?.sessionId === sessionId ? null : previous);
         }
         if (event.type === 'approval_resolved') {
           const status = (event.approved ? 'approved' : 'denied') as MessageApproval['status'];
@@ -668,8 +708,27 @@ const ChatAI: React.FC = () => {
         if (event.type === 'artifact') {
           assistant.artifacts = [...(assistant.artifacts || []).filter((file) => file.fileId !== event.artifact.fileId), event.artifact]
           setLiveFiles(previous => ({ ...previous, files: previous.files.filter(file => !event.artifact.toolCallId || file.toolCallId !== event.artifact.toolCallId) }));
-          const followingArtifact = (previous: { sessionId: string; artifact: AgentArtifact } | null) => previous?.sessionId === sessionId && previous.artifact.toolCallId === event.artifact.toolCallId;
-          setPreviewSelection(previous => followingArtifact(previous) || canAutoOpenPreview() ? { sessionId, artifact: event.artifact } : previous);
+          const followingDraft = (previous: { sessionId: string; tabs: AgentArtifact[]; activeId: string } | null) =>
+            previous?.sessionId === sessionId
+              ? previous.tabs.findIndex(file => file.toolCallId && file.toolCallId === event.artifact.toolCallId)
+              : -1;
+          setOpenedFiles(previous => {
+            const draftTab = followingDraft(previous);
+            // A draft still being written keeps rewriting its own tab. A brand new
+            // file may open one only where the panel sits beside the chat; below
+            // that width it would swap the view away from the reply being read.
+            if (draftTab < 0 && !canAutoOpenPreview()) return previous;
+            const base = previous?.sessionId === sessionId
+              ? previous : { sessionId, tabs: [] as AgentArtifact[], activeId: '' };
+            if (draftTab >= 0) {
+              return { ...base, tabs: base.tabs.map((file, position) => position === draftTab ? event.artifact : file) };
+            }
+            const existing = base.tabs.findIndex(file => file.fileId === event.artifact.fileId);
+            const tabs = existing >= 0
+              ? base.tabs.map((file, position) => position === existing ? event.artifact : file)
+              : [...base.tabs, event.artifact];
+            return { sessionId, tabs, activeId: event.artifact.fileId };
+          });
         }
         if (event.type === 'delta') assistant.content += event.text
         if (event.type === 'step') {
@@ -708,7 +767,8 @@ const ChatAI: React.FC = () => {
       const finishDraft = (file: AgentArtifact): AgentArtifact => file.draft && ['generating', 'saving'].includes(file.draft.status)
         ? { ...file, draft: { ...file.draft, status: requestController.signal.aborted ? 'cancelled' : 'failed' } } : file;
       setLiveFiles(previous => previous.sessionId === sessionId ? { ...previous, files: previous.files.map(finishDraft) } : previous);
-      setPreviewSelection(previous => previous?.sessionId === sessionId ? { ...previous, artifact: finishDraft(previous.artifact) } : previous);
+      setOpenedFiles(previous => previous?.sessionId === sessionId
+        ? { ...previous, tabs: previous.tabs.map(finishDraft) } : previous);
       assistant = { ...assistant, isLoading: false }
       assistant.approvals = assistant.approvals?.map(item => item.status === 'pending' ? { ...item, status: 'closed' } : item)
       setApprovals(items => items.map(item => item.status === 'pending' ? { ...item, status: 'closed' } : item));
@@ -875,7 +935,11 @@ const ChatAI: React.FC = () => {
             onConfirm={confirmSkillSession}>
             <p>{t('cap.newSessionBody')}</p>
           </Dialog>
-          <div className="chat-panels" ref={panelsRef}>
+          <div className={`chat-panels${isChatView ? ' is-chat-view' : ''}`} ref={panelsRef}>
+            {previewTabs && previewArtifact && <PreviewTabBar className="preview-tabbar--narrow"
+              tabs={previewTabs.tabs} activeId={previewTabs.activeId} available={previewArtifacts}
+              showChat chatActive={isChatView} onShowChat={() => setIsChatView(true)}
+              onSelect={selectPreviewTab} onCloseTab={closePreviewTab} onOpenFile={openPreview} />}
             <div className='messages-content'>
               <div className='messages-scollWrap' ref={messagesRef}>
                 {isWelcomeConversation ? (
@@ -920,7 +984,7 @@ const ChatAI: React.FC = () => {
                         setShareTarget={setShareTargetElement}
                         canRetry={msg.isBot && !msg.isLoading && index === messages.length - 1 && !isLoading}
                         onRetry={onRetryLastAnswer}
-                        onPreviewArtifact={setPreviewArtifact}
+                        onPreviewArtifact={openPreview}
                       />
                     ))}
                     {showTypingIndicator && (
@@ -979,7 +1043,10 @@ const ChatAI: React.FC = () => {
                 </div>}
             </div>
             {previewArtifact && <div {...splitterProps} />}
-            {previewArtifact && <ArtifactPreviewPanel key={previewArtifact.toolCallId || previewArtifact.fileId} artifact={previewArtifact} artifacts={previewArtifacts} onSelect={setPreviewArtifact} onClose={() => setPreviewSelection(null)} />}
+            {previewArtifact && <ArtifactPreviewPanel key={previewArtifact.fileId} artifact={previewArtifact}
+              tabs={previewTabs?.tabs || [previewArtifact]} available={previewArtifacts}
+              onSelect={selectPreviewTab} onCloseTab={closePreviewTab} onOpenFile={openPreview}
+              onClose={() => setOpenedFiles(null)} />}
           </div>
         </div>
       </div>
