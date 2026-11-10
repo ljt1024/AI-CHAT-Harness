@@ -466,6 +466,8 @@
   "trace.city": "查询地点：{city} · {kind}",
   "trace.current": "实时天气",
   "trace.deleteSkill": "删除技能",
+  "trace.ecomDetail": "商品详情",
+  "trace.ecomSearch": "商品搜索",
   "trace.excel": "Excel 导出",
   "trace.expression": "计算方法与输入：{value}",
   "trace.failed": "使用 {name} 失败",

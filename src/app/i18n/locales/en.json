@@ -466,6 +466,8 @@
   "trace.city": "Location: {city} · {kind}",
   "trace.current": "Current weather",
   "trace.deleteSkill": "Delete skill",
+  "trace.ecomDetail": "Product lookup",
+  "trace.ecomSearch": "Product search",
   "trace.excel": "Excel export",
   "trace.expression": "Operation and inputs: {value}",
   "trace.failed": "{name} failed",

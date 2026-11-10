@@ -158,6 +158,7 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 | 文件 | `read_file`、`write_file`、`grep`、`glob`（限定在会话工作区，阻止凭据路径与 shell 语法） |
 | 命令 | `run_command`（Docker 沙箱内执行，超时与 PID 受限） |
 | 联网 | `web_search`、`web_fetch`（在**宿主进程**里执行，容器仍然断网，见下） |
+| 商品 | `search_products`、`get_product`（联盟商品库关键词搜索与详情，用于比价，见下） |
 | 技能 | `list_skills`、`load_skill`、`install_skill`、`delete_skill` |
 | MCP | 通过 Streamable HTTP 注册外部服务，工具按命名空间暴露 |
 
@@ -173,6 +174,19 @@ AGENTFORGE_API_TARGET=http://127.0.0.1:8016 npm run dev -- --port 5186
 两个工具都是 `auto` 权限：给一个只读 GET 加确认弹窗，会把“确认”训练成习惯性点击，真正要紧的闸门就没人看了。隔离的会话里它们是唯一不进容器的工具（`api.py` 的 `WEB_TOOL_MAP` 分支），否则模型会“拥有”一个只返回 DNS 失败的工具。
 
 已知取舍：搜索是抓页面而不是调 API，有验证码与改版风险（360 侧做了 1 秒间隔与 5 分钟缓存）；`web_fetch` 理论上能把工作区内容塞进查询串带出去——任何出网路径都有这个性质，记录里能看到 URL，真要收紧改一条策略即可。升级路径是把同一个工具后端换成搜索 API（博查 / Tavily / Serper），解析函数是纯函数，已有测试覆盖。
+
+#### 商品价格：为什么是商品库而不是爬虫（ADR-0027）
+
+比价要的是「关键词 → 商品列表 → 到手价 / 原价 / 销量」。淘宝、京东、拼多多的搜索页都要求登录态、滑块验证和签名参数，爬虫今天能跑明天就失效，跟上的代价是账号被限。所以这两个工具接的是**联盟商品库**（淘客易，Bearer token；`tools/ecommerce.py`）：
+
+- `search_products`：关键词 + 价格区间 + 排序（相关度 / 价格升降 / 销量），返回标题、到手价、原价、券额、月销与商品链接；
+- `get_product`：按商品 ID 或淘宝/天猫链接查一条记录，用来确认某一行的报价。
+
+**覆盖范围是这里最重要的取舍**：联盟库只收录带佣金的商品，不是全站索引。热门商品覆盖得好，冷门型号可能查不到——查不到不等于没有在售。工具描述和返回值里都写了这句，因为一个以为自己在看全市场的模型会直接回答「全网最低价」。
+
+凭证走 `TAOKEYI_TOKEN`，未配置时工具不报异常，而是返回一条可执行的说明（让运营去配，不许向对话里的用户索要），模型据此如实说价格未核实。两个工具都是 `auto` 权限：一次只读 GET，改不了任何一侧的数据，加确认只会训练出习惯性点击。
+
+与联网工具同理，它们是**宿主能力**：隔离会话里由 `api.py` 的 `ECOM_TOOL_MAP` 分支直接注册，token 不进容器。换一家商品库（大淘客、多多进宝、OneBound）只需要再写一个字段映射函数，两个工具只认归一化后的记录。
 
 ### 会话文件系统（上传 / 下载）
 
@@ -346,7 +360,7 @@ Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验�
 
 - [实现与验收记录](docs/IMPLEMENTATION.md) · [待办与决策](NOTES.md)
 - [技能与 MCP 能力说明](docs/CAPABILITIES.md)
-- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md) · [0017 手机号注册与短信](docs/adr/0017-phone-signup-and-sms-codes.md) · [0018 邮箱注册与验证码邮件](docs/adr/0018-email-signup-and-smtp-codes.md) · [0019 模型调用重试](docs/adr/0019-model-call-retries.md) · [0020 会话文件系统](docs/adr/0020-conversation-file-system.md) · [0021 PDF 预览交给浏览器](docs/adr/0021-pdf-viewer-is-the-browser.md) · [0022 PDF 由 pdf.js 自绘](docs/adr/0022-pdf-pages-are-drawn-by-pdfjs.md) · [0023 pdf.js worker 按版本寻址](docs/adr/0023-pdfjs-worker-url-is-versioned.md) · [0024 联网是宿主能力](docs/adr/0024-web-access-is-a-harness-capability.md) · [0025 跟随由输入释放](docs/adr/0025-follow-is-released-by-input.md) · [0026 工作区属于会话](docs/adr/0026-a-workspace-belongs-to-the-conversation.md)
+- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md) · [0017 手机号注册与短信](docs/adr/0017-phone-signup-and-sms-codes.md) · [0018 邮箱注册与验证码邮件](docs/adr/0018-email-signup-and-smtp-codes.md) · [0019 模型调用重试](docs/adr/0019-model-call-retries.md) · [0020 会话文件系统](docs/adr/0020-conversation-file-system.md) · [0021 PDF 预览交给浏览器](docs/adr/0021-pdf-viewer-is-the-browser.md) · [0022 PDF 由 pdf.js 自绘](docs/adr/0022-pdf-pages-are-drawn-by-pdfjs.md) · [0023 pdf.js worker 按版本寻址](docs/adr/0023-pdfjs-worker-url-is-versioned.md) · [0024 联网是宿主能力](docs/adr/0024-web-access-is-a-harness-capability.md) · [0025 跟随由输入释放](docs/adr/0025-follow-is-released-by-input.md) · [0026 工作区属于会话](docs/adr/0026-a-workspace-belongs-to-the-conversation.md) · [0027 比价读商品库](docs/adr/0027-a-price-lookup-reads-the-catalogue.md)
 
 ## 常见问题
 

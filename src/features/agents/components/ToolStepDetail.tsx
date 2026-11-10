@@ -29,6 +29,7 @@ export function toolLabel(tool: string, t: Translate): string {
     run_command: t('trace.shell'), read_file: t('trace.readFile'), write_file: t('trace.writeFile'),
     grep: t('trace.searchText'), glob: t('trace.findFiles'),
     web_search: t('trace.webSearch'), web_fetch: t('trace.webFetch'),
+    search_products: t('trace.ecomSearch'), get_product: t('trace.ecomDetail'),
     list_skills: t('trace.listSkills'), load_skill: t('trace.loadSkill'),
     install_skill: t('trace.installSkill'), delete_skill: t('trace.deleteSkill'),
   };

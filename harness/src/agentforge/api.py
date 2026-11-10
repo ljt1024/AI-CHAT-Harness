@@ -40,6 +40,7 @@ from agentforge.mail import build_mailer
 from agentforge.sms import build_sender
 from agentforge.tools.ask import AskUserTool
 from agentforge.tools.base import ToolRegistry
+from agentforge.tools.ecommerce import ECOM_TOOL_MAP, ECOM_TOOLS
 from agentforge.tools.fs import FileTool, Workspace
 from agentforge.tools.shell import ShellTool
 from agentforge.tools.web import WEB_TOOL_MAP, WEB_TOOLS
@@ -264,6 +265,8 @@ def create_app(settings=None, store=None, gateway=None):
         registry.register(AskUserTool())
         for tool in WEB_TOOLS:
             registry.register(tool())
+        for tool in ECOM_TOOLS:
+            registry.register(tool(settings))
         for name in SKILL_TOOL_NAMES:
             registry.register(SkillTool(skill_manager, name))
         return registry
@@ -319,9 +322,9 @@ def create_app(settings=None, store=None, gateway=None):
         return bus, True
 
     default = AgentDefinition(id="default", name="AgentForge",
-        description="通用助手：可以读写工作区文件、运行受限命令、搜索并读取网页、按需加载技能。",
+        description="通用助手：可以读写工作区文件、运行受限命令、搜索并读取网页、查询商品价格、按需加载技能。",
         tools=["read_file", "write_file", "grep", "glob", "run_command", "ask_user",
-               "web_search", "web_fetch"])
+               "web_search", "web_fetch", "search_products", "get_product"])
 
     @asynccontextmanager
     async def lifespan(app):
@@ -1390,6 +1393,12 @@ def create_app(settings=None, store=None, gateway=None):
                         # produce a DNS failure dressed up as a tool result.
                         if name in WEB_TOOL_MAP:
                             registry.register(WEB_TOOL_MAP[name]())
+                            continue
+                        # Same reasoning for the catalogue: it is one GET from the
+                        # harness to a fixed host with a token the container must
+                        # never see.
+                        if name in ECOM_TOOL_MAP:
+                            registry.register(ECOM_TOOL_MAP[name](settings))
                             continue
                         if name not in {tool.name for tool in remote} | set(SKILL_TOOL_NAMES):
                             registry.register(SandboxTool(pool.runner, lease.sandbox, name,

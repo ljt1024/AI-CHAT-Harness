@@ -130,6 +130,12 @@ class Settings(BaseSettings):
     # created by an operator only, and the endpoint says the address is unknown.
     signup_open: bool = True
 
+    # Price comparison reads an affiliate catalogue (see tools/ecommerce.py).
+    # Empty disables the two tools with an explanation rather than failing a run:
+    # the rest of the agent still works, and a model that is told the capability
+    # is unconfigured answers honestly instead of inventing a price.
+    taokeyi_token: SecretStr = SecretStr("")
+
     @field_validator("sandbox_image")
     @classmethod
     def _known_image(cls, value: str) -> str:

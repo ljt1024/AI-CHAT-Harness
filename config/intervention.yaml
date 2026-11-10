@@ -33,6 +33,12 @@ tools:
   web_search: auto
   web_fetch: auto
 
+  # ---------- the catalogue: one GET, fixed host, no user content ----------
+  # A price lookup cannot change anything anywhere, so there is nothing for a
+  # human to approve; the token authorises the request, not the reader.
+  search_products: auto
+  get_product: auto
+
   # ---------- writing needs a path check, not a human ----------
   write_file:
     level: rule

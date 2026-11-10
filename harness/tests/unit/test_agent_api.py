@@ -57,7 +57,8 @@ async def test_tools_catalog_matches_the_registry(service):
     async with client_for(app) as client:
         payload = (await client.get("/api/tools")).json()["data"]
     names = {tool["name"] for tool in payload}
-    assert {"read_file", "write_file", "grep", "glob", "run_command", "ask_user"} <= names
+    assert {"read_file", "write_file", "grep", "glob", "run_command", "ask_user",
+            "web_search", "web_fetch", "search_products", "get_product"} <= names
     # Skill helpers are injected into every agent by prepare_agent, so offering
     # them here would suggest a choice that does not exist.
     assert not names & {"list_skills", "load_skill", "install_skill", "delete_skill"}

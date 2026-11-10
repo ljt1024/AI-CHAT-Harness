@@ -57,7 +57,7 @@ function toDraft(agent: AgentDefinition | null, tools: ToolInfo[]): Draft {
     modelId: agent?.modelId || 'deepseek-chat',
     // Web access is on by default: an assistant that cannot look anything up
     // answers "I cannot reach the internet", which is the wrong first impression.
-    tools: agent?.tools || ['read_file', 'write_file', 'grep', 'glob', 'run_command', 'web_search', 'web_fetch'],
+    tools: agent?.tools || ['read_file', 'write_file', 'grep', 'glob', 'run_command', 'web_search', 'web_fetch', 'search_products', 'get_product'],
     skills: agent?.skills || [],
     servers: agent?.mcp_servers || [],
     sandbox: Boolean(agent?.sandbox_policy),
