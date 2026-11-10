@@ -586,6 +586,13 @@ def create_app(settings=None, store=None, gateway=None):
         if valid_guest_id(guest):
             try:
                 await auth.adopt_guest(guest, user["id"])
+                # The transcript may already own a sandbox from a pre-login turn.
+                # Move the lease with the rows, or the next run refuses to resume
+                # onto work this reader actually did.
+                moved = await pool.adopt_owner(guest, user["id"])
+                if moved:
+                    logger.info("Re-bound %d sandbox lease(s) from %s to %s",
+                                moved, guest, user["id"])
             except Exception:
                 logger.warning("Could not adopt guest transcript %s", guest, exc_info=True)
             response.delete_cookie(GUEST_COOKIE, path="/")

@@ -187,6 +187,62 @@ async def test_a_cached_sandbox_stays_bound_to_its_account(tmp_path):
         await pool.close()
 
 
+async def test_a_conversation_keeps_its_directory_across_a_restart(tmp_path):
+    """The map is memory, but the files a run produced are not: a restart must not orphan them."""
+    first_pool = SandboxPool(FakeRunner(tmp_path), warm_size=0, max_size=2)
+    first = await first_pool.acquire("session-a", owner="user_a")
+    directory = first.sandbox.workspace.root
+    first.sandbox.workspace.path("report.html").write_text("<h1>kept</h1>")
+    await first_pool.close()
+
+    # A new process: no leases, no map in memory — only the record on disk saying
+    # which directory this conversation owns.
+    second_pool = SandboxPool(FakeRunner(tmp_path), warm_size=0, max_size=2)
+    await second_pool.start()
+    try:
+        second = await second_pool.acquire("session-a", owner="user_a")
+        assert second.sandbox.workspace.root == directory
+        assert second.sandbox.workspace.path("report.html").read_text() == "<h1>kept</h1>"
+        await second_pool.release("session-a")
+    finally:
+        await second_pool.close()
+
+
+async def test_signing_in_carries_the_trial_sandbox_to_the_account(tmp_path):
+    """A visitor's own sandbox must not become "another account's" on login."""
+    pool = SandboxPool(FakeRunner(tmp_path), warm_size=0, max_size=4)
+    try:
+        trial = await pool.acquire("session-a", owner="guest_abc")
+        await pool.release("session-a")
+
+        assert await pool.adopt_owner("guest_abc", "user_a") == 1
+
+        resumed = await pool.acquire("session-a", owner="user_a")
+        assert resumed.sandbox.id == trial.sandbox.id, "the account resumes onto the files it made"
+        await pool.release("session-a")
+    finally:
+        await pool.close()
+
+
+async def test_adopting_a_guest_leaves_other_leases_alone(tmp_path):
+    pool = SandboxPool(FakeRunner(tmp_path), warm_size=0, max_size=4)
+    try:
+        await pool.acquire("session-a", owner="guest_abc")
+        await pool.release("session-a")
+        other = await pool.acquire("session-b", owner="user_b")
+        await pool.release("session-b")
+
+        assert await pool.adopt_owner("guest_abc", "user_a") == 1
+
+        with pytest.raises(SandboxUnavailable):
+            await pool.acquire("session-b", owner="user_a")
+        again = await pool.acquire("session-b", owner="user_b")
+        assert again.sandbox.id == other.sandbox.id
+        await pool.release("session-b")
+    finally:
+        await pool.close()
+
+
 async def test_one_account_cannot_take_the_whole_pool(tmp_path):
     pool = SandboxPool(FakeRunner(tmp_path), warm_size=0, max_size=4, max_per_owner=1)
     try:

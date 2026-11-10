@@ -2,12 +2,15 @@ import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 import hashlib
+import json
 import logging
+import os
 import re
 import time
 
 from agentforge.sandbox.breaker import CircuitBreaker
 from agentforge.sandbox.docker_runner import Sandbox, SandboxUnavailable
+from agentforge.tools.fs import Workspace
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +55,63 @@ class SandboxPool:
 
     async def start(self):
         # Nothing this process remembers from a predecessor can be rebuilt onto: the
-        # session-to-workspace map lives in memory. Sweeping before warming therefore
-        # reclaims real leftovers instead of racing the warm-up.
+        # session-to-workspace map lives in memory. The map is written to disk for
+        # exactly that reason, and it is read *before* the sweep so the directories
+        # it names are protected instead of reclaimed as leftovers.
+        self._load_workspaces()
         await self.sweep()
         await self.replenish()
         self.maintenance = asyncio.create_task(self._maintain())
+
+    # --------------------------------------------------------- workspace memory
+    def _map_path(self):
+        root = getattr(self.runner, "root", None)
+        return (root / "sessions.json") if root else None
+
+    def _load_workspaces(self) -> int:
+        """Rebuild session → directory from disk, skipping directories that are gone."""
+        path = self._map_path()
+        if path is None or not path.exists():
+            return 0
+        try:
+            rows = json.loads(path.read_text())
+        except (OSError, ValueError):
+            # A damaged map must not stop the pool from starting; the worst case is
+            # that a conversation gets a fresh directory.
+            logger.warning("Session workspace map is unreadable; starting empty.", exc_info=True)
+            return 0
+        if not isinstance(rows, dict):
+            return 0
+        loaded = 0
+        for session_id, name in rows.items():
+            if not isinstance(session_id, str) or not isinstance(name, str):
+                continue
+            if not re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", name):
+                continue
+            directory = path.parent / name
+            if directory.is_dir():
+                self.workspaces[session_id] = Workspace(directory)
+                loaded += 1
+        return loaded
+
+    def _save_workspaces(self):
+        """Persist what only memory knew: which directory each conversation owns.
+
+        Called while holding `self.lock`, and the file is small enough that the
+        write does not deserve a thread.
+        """
+        path = self._map_path()
+        if path is None:
+            return
+        rows = {session_id: workspace.root.name
+                for session_id, workspace in self.workspaces.items()}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(rows, ensure_ascii=False))
+            os.replace(temporary, path)
+        except OSError:
+            logger.warning("Could not persist the session workspace map.", exc_info=True)
 
     async def sweep(self):
         """Reclaim containers and directories no live session can rebuild onto."""
@@ -187,6 +242,7 @@ class SandboxPool:
             if await self.runner.healthy(selected.sandbox):
                 async with self.lock:
                     self.workspaces[session_id] = selected.sandbox.workspace
+                    self._save_workspaces()
                 self.breaker.success()
                 self._schedule_replenish()
                 return selected
@@ -203,6 +259,7 @@ class SandboxPool:
             async with self.lock:
                 self.entries[sandbox.id] = selected
                 self.workspaces[session_id] = sandbox.workspace
+                self._save_workspaces()
             self.breaker.success()
         except SandboxUnavailable:
             self.breaker.failure()
@@ -232,6 +289,29 @@ class SandboxPool:
             self.entries.pop(lease.sandbox.id, None)
         await self.runner.destroy(lease.sandbox)
 
+    async def adopt_owner(self, previous: str, owner: str) -> int:
+        """Re-bind leases when the same reader turns into an account.
+
+        A visitor can run whole turns before signing in, and `adopt_guest` moves
+        that transcript to the account. The sandbox holding the transcript's
+        files has to move with it: leaving the old owner on the lease makes every
+        later run fail with "Session sandbox belongs to another account", which
+        is the right refusal for a different reader and a dead end for this one.
+
+        Only the holder of the guest cookie can name `previous` (it is read from
+        that browser's cookie), so this widening is not a way to claim someone
+        else's sandbox.
+        """
+        if not previous or not owner or previous == owner:
+            return 0
+        moved = 0
+        async with self.lock:
+            for lease in self.entries.values():
+                if lease.owner == previous and lease.state != SandboxState.DESTROY:
+                    lease.owner = owner
+                    moved += 1
+        return moved
+
     async def discard(self, session_id: str, owner: str | None = None) -> bool:
         """Forget a session's sandbox: container, lease and directory.
 
@@ -251,6 +331,8 @@ class SandboxPool:
             if owner is not None and lease is not None and lease.owner and lease.owner != owner:
                 return False
             workspace = self.workspaces.pop(session_id, None)
+            if workspace is not None:
+                self._save_workspaces()
             if lease is not None:
                 lease.state = SandboxState.DESTROY
                 self.entries.pop(lease.sandbox.id, None)
