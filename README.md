@@ -253,6 +253,7 @@ scripts/audit-skills.sh [dir]                              # 安装前静态审�
 - 名称与说明带 `name_en` / `summary_en`：目录是运营数据，不能放进语言文件，英文界面下缺译时回落中文而不是空白。
 - **tab 记在地址栏**（`/agents?tab=tools`），不是组件状态。状态只活到组件被卸载为止，而刷新、dev server 重载、渲染崩溃后的重挂载都会把它清掉——表现就是广场闪一下变回智能体列表，且没有任何链接能把人带到广场。后退/前进也跟着走。
 - **失败不等于空目录**：请求没成功时页面显示原因和「重试」，不会渲染「管理员还没有配置服务目录」——这两件事在屏幕上必须长得不一样，否则一次 401 会被读成「这个部署什么都没配」。
+- **已经画出来的目录不会被一次刷新抹掉**：重挂载后的第一帧直接用上次的答案（模块级缓存 + `sessionStorage`，按账号分键），不是先空一帧再在 effect 里补；目录与「我的服务」各自结算（`Promise.allSettled`），一个装了坏服务的账号不会因为那行发现超时（30s）就丢掉目录；刷新真的返回空时保留现有卡片并说明「下面仍是上一次的结果」。曾经的表现是：列表一闪、点一下消失。见 [ADR-0031](docs/adr/0031-a-shelf-once-seen-is-not-emptied-by-a-refresh.md)。
 - 令牌落库加密（Fernet，`MCP_SECRET_KEY` 或 `AGENTFORGE_WORKSPACE/.mcp-key`，0600）；升级前写入的明文行在启动时迁移一次。轮换密钥会让旧令牌读不出来并明确报错，而不是静默变成「无令牌」。
 - 接口：`GET /api/mcp/catalog`、`POST /api/mcp/catalog/{id}/install`（请求体只有 `{token}`）。**注册是同步的**：安装必须验证凭证，201 立刻返回工具清单；页面负责显示等待与失败原因。
 - 手动填写地址与粘贴导入仍在页面底部的「手动添加服务」里——这是唯一需要键入 URL 的路径，也是唯一会被地址闸门拦下的路径（见 [ADR-0029](docs/adr/0029-the-catalogue-owns-the-address.md)）。目录能列什么、密钥放在哪，见 [ADR-0030](docs/adr/0030-a-catalogue-can-list-somebody-elses-services.md)。

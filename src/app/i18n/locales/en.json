@@ -339,6 +339,7 @@
   "market.searchPlaceholder": "Search services by name or use case",
   "market.serviceDocs": "Service guide",
   "market.signIn": "Sign in to browse and connect tool services.",
+  "market.stale": "This refresh returned no services; the list below is the previous answer.",
   "market.switchedOff": "Switched off",
   "market.tokenInQuery": "This service takes the key as a URL parameter. Paste the raw key; it is stored encrypted.",
   "market.tokenSaved": "Token saved",

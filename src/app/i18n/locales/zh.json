@@ -339,6 +339,7 @@
   "market.searchPlaceholder": "搜索服务名称或用途",
   "market.serviceDocs": "服务说明",
   "market.signIn": "登录后可以查看并接入工具服务。",
+  "market.stale": "这次刷新没有取到服务列表，下面仍是上一次的结果。",
   "market.switchedOff": "已停用",
   "market.tokenInQuery": "这个服务把密钥放在链接参数里，直接粘贴原始密钥即可，保存时会加密。",
   "market.tokenSaved": "已保存令牌",

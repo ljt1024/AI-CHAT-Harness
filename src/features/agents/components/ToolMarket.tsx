@@ -49,6 +49,14 @@ interface CachedMarket {
   servers: McpServerSummary[];
 }
 
+const EMPTY_MARKET: CachedMarket = { catalog: [], servers: [] };
+
+// sessionStorage survives a reload but is still read after the first paint, one
+// commit too late: the remount renders an empty shelf and fills it in the effect.
+// This holds the same answer for the life of the page, so a remount can seed its
+// very first render with it.
+let lastAnswer: { owner: string; data: CachedMarket } | null = null;
+
 function readCache(owner: string): CachedMarket | null {
   try {
     const raw = sessionStorage.getItem(CACHE_PREFIX + owner);
@@ -69,6 +77,12 @@ function writeCache(owner: string, cache: CachedMarket): void {
   }
 }
 
+/** The answer this account last received, read before the first render. */
+function initialMarket(owner: string): CachedMarket {
+  if (lastAnswer && lastAnswer.owner === owner) return lastAnswer.data;
+  return readCache(owner) ?? EMPTY_MARKET;
+}
+
 /**
  * The catalogue, plus whatever this account already installed.
  *
@@ -80,14 +94,23 @@ function writeCache(owner: string, cache: CachedMarket): void {
 export function ToolMarket() {
   const { t, language } = useLanguage();
   const { user, askToSignIn } = useAuth();
-  const [catalog, setCatalog] = useState<McpCatalogEntry[]>([]);
-  const [servers, setServers] = useState<McpServerSummary[]>([]);
+  // The account, not the `user` object: a session re-read hands back a fresh
+  // object with the same id, and re-running the fetch below on that would be a
+  // request nobody asked for.
+  const ownerId = user?.id ?? '';
+  const [seed] = useState(() => initialMarket(ownerId));
+  const [catalog, setCatalog] = useState<McpCatalogEntry[]>(seed.catalog);
+  const [servers, setServers] = useState<McpServerSummary[]>(seed.servers);
   // "loaded" rather than "loading": what the page must never do is paint an empty
   // catalogue as if the deployment had none. Until a request has actually
   // succeeded the panel says it is fetching, and a refresh keeps the rows that
-  // are already on screen instead of blinking them away.
-  const [loaded, setLoaded] = useState(false);
+  // are already on screen instead of blinking them away. Seeded from the last
+  // answer so a remount starts there rather than here.
+  const [loaded, setLoaded] = useState(seed.catalog.length > 0 || seed.servers.length > 0);
   const [error, setError] = useState('');
+  // A refresh that answers "nothing" while rows are on screen: the rows stay and
+  // this says why they are older than the timestamp.
+  const [stale, setStale] = useState(false);
   const [busy, setBusy] = useState('');
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState(ALL);
@@ -98,47 +121,72 @@ export function ToolMarket() {
   const [paste, setPaste] = useState('');
   const [retrying, setRetrying] = useState(false);
 
+  // How many cards are actually on screen, for the "this refresh came back
+  // empty" comparison in `load`. A ref because `load` must not be rebuilt every
+  // time the catalogue changes.
+  const shown = useRef(seed.catalog.length);
+  useEffect(() => { shown.current = catalog.length; }, [catalog]);
+
   const load = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const [nextCatalog, nextServers] = await Promise.all([
-        fetchMcpCatalog(signal), fetchMcpServers(signal)]);
-      setCatalog(nextCatalog);
-      setServers(nextServers);
-      setError('');
-      setLoaded(true);
-    } catch (cause) {
-      if (!signal?.aborted) setError(cause instanceof Error ? cause.message : String(cause));
+    // The two halves are asked for together and settled apart. "My services" runs
+    // a live discovery per row, so it can take tens of seconds, and one
+    // unreachable server makes it fail outright; awaited as a pair, that single
+    // row used to hold back -- or throw away -- a catalogue that had answered in
+    // milliseconds. That is exactly the shape of "the list was here, then it was
+    // not".
+    const [catalogResult, serversResult] = await Promise.allSettled([
+      fetchMcpCatalog(signal), fetchMcpServers(signal)]);
+    if (signal?.aborted) return;
+
+    if (catalogResult.status === 'fulfilled') {
+      const answer = catalogResult.value;
+      // An answer of "no services at all" while the shelf is full is a
+      // half-started server, not a catalogue that vanished: keep the rows and let
+      // the next refresh correct them, rather than telling the reader the
+      // deployment offers nothing.
+      const emptied = !answer.length && shown.current > 0;
+      setCatalog(previous => (answer.length || !previous.length ? answer : previous));
+      setStale(emptied);
     }
+    if (serversResult.status === 'fulfilled') setServers(serversResult.value);
+
+    const failure = catalogResult.status === 'rejected' ? catalogResult.reason
+      : serversResult.status === 'rejected' ? serversResult.reason : null;
+    if (failure) setError(failure instanceof Error ? failure.message : String(failure));
+    else setError('');
+    // Only an answer counts as "loaded". Two failures leave the panel saying it
+    // is fetching, next to the reason it failed, instead of telling the reader
+    // the deployment offers no services.
+    if (catalogResult.status === 'fulfilled' || serversResult.status === 'fulfilled') setLoaded(true);
   }, []);
 
-  const owner = useRef('');
+  const owner = useRef(ownerId);
 
   useEffect(() => {
     // The catalogue needs an account; the guest path is the sign-in prompt, not
     // a request that would come back 401 and look like a broken page.
-    if (!user) { owner.current = ''; return; }
-    // Only a change of account clears the rows. The same account re-running this
-    // effect -- a fresh `user` object from /api/auth/me, say -- must keep what is
-    // already on screen; otherwise the list blinks away for a reason the reader
-    // cannot see.
-    if (owner.current !== user.id) {
-      owner.current = user.id;
-      // Paint the previous answer before asking again, so a remount shows the
-      // list it showed a moment ago instead of an empty shelf that fills in later.
-      const cached = readCache(user.id);
+    if (!ownerId) { owner.current = ''; return; }
+    // Only a change of account clears the rows; this render was already seeded
+    // from that account's cache, so there is nothing to clear on the first pass.
+    if (owner.current !== ownerId) {
+      owner.current = ownerId;
+      const cached = readCache(ownerId);
       setCatalog(cached?.catalog ?? []);
       setServers(cached?.servers ?? []);
       setLoaded(!!cached);
+      setStale(false);
     }
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
-  }, [load, user]);
+  }, [load, ownerId]);
 
   useEffect(() => {
-    if (!user || !loaded) return;
-    writeCache(user.id, { catalog, servers });
-  }, [user, loaded, catalog, servers]);
+    if (!ownerId || !loaded) return;
+    const answer = { catalog, servers };
+    lastAnswer = { owner: ownerId, data: answer };
+    writeCache(ownerId, answer);
+  }, [ownerId, loaded, catalog, servers]);
 
   const run = useCallback(async (key: string, action: () => Promise<unknown>) => {
     setBusy(key);
@@ -252,6 +300,10 @@ export function ToolMarket() {
       </div>}
 
       {!loaded && !error && <p className="market-hint">{t('market.loading')}</p>}
+      {/* Rows that outlived the answer they came from are said so out loud: a
+          full shelf under a refresh that returned nothing is either a slow
+          server or a real removal, and the reader is the one who can tell. */}
+      {stale && <p className="market-hint">{t('market.stale')}</p>}
       {loaded && !catalog.length && <p className="market-hint">{t('market.emptyCatalog')}</p>}
       {loaded && !!catalog.length && !visible.length &&
         <p className="market-hint">{t('market.noMatch')}</p>}
