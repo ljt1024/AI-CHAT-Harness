@@ -4,8 +4,11 @@
   gap: 16px;
   /* A flex column child is stretched, but its width is still negotiated with the
      parent. Saying it may shrink below its content keeps the grid below from
-     inheriting a width of zero on engines that measure children first. */
+     inheriting a width of zero on engines that measure children first. The
+     explicit width pins the other end of the same argument: this block is as
+     wide as its parent, never as wide as its contents. */
   min-width: 0;
+  width: 100%;
 }
 
 .market-head h2 {
@@ -70,10 +73,78 @@
 }
 
 .market-count {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin: 0;
   align-self: flex-end;
   color: var(--text-muted-color);
   font-size: 11px;
+}
+
+/* The way back from a filter, next to the count that explains the short grid. */
+.market-clear {
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--button-ghost-bg);
+  color: var(--secondary-color);
+  font-family: var(--font-body);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.market-clear:hover {
+  border-color: var(--secondary-color);
+}
+
+/* Not a grey sentence: a filter that removed every row has to look like a state
+   the page is in, with the reason and the way out inside the same box. */
+.market-nomatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 24px;
+  border-radius: 18px;
+  border: 1px dashed var(--border-strong);
+  background: var(--panel-bg);
+  text-align: center;
+}
+
+.market-nomatch-title {
+  margin: 0;
+  color: var(--text-color);
+  font-size: 14px;
+}
+
+.market-nomatch .agent-button {
+  padding: 6px 16px;
+  font-size: 12px;
+}
+
+/* A session that dropped is its own state, with its own fix. */
+.market-signedout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  border: 1px dashed var(--border-strong);
+  background: var(--panel-bg);
+}
+
+.market-signedout p {
+  margin: 0;
+  color: var(--text-color);
+  font-size: 13px;
+}
+
+.market-signedout .agent-button {
+  flex: none;
+  padding: 6px 16px;
+  font-size: 12px;
 }
 
 /* auto-fit with a floor that yields to the container, rather than auto-fill with
@@ -87,6 +158,7 @@
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
   gap: 16px;
   min-width: 0;
+  width: 100%;
 }
 
 .market-card {
@@ -310,6 +382,16 @@
   opacity: 0.72;
   font-variant-numeric: tabular-nums;
   user-select: text;
+}
+
+/* The readout turns into a warning exactly when it says the shelf is empty:
+   a reader who never reads diagnostics still notices a red line. */
+.market-probe--alert {
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger-color) 12%, transparent);
+  color: var(--danger-color);
+  opacity: 1;
 }
 
 @media (max-width: 640px) {

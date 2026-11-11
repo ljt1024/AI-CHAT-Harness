@@ -281,6 +281,22 @@ export function ToolMarket() {
 
   const installedTools = servers.reduce((total, server) => total + server.tools.length, 0);
 
+  // A filter is a state this component holds, and it dies with the component:
+  // a refresh clears it and the whole shelf is back. That is exactly the shape
+  // of "refresh and it is there" -- so what a filter does to the page has to be
+  // stated, not inferred from a grid that got shorter for a reason the reader
+  // cannot see. A full filter bar over an empty grid is the one screen this page
+  // must never produce without an explanation and a way back.
+  const filtering = !!query.trim() || category !== ALL;
+  const filterParts = [
+    query.trim() ? t('market.filterQuery', { query: query.trim() }) : '',
+    category !== ALL
+      ? t('market.filterCategory', {
+          category: CATEGORY_LABELS[category] ? t(CATEGORY_LABELS[category]) : category })
+      : '',
+  ].filter(Boolean);
+  const clearFilters = () => { setQuery(''); setCategory(ALL); };
+
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     const size = (node: Element | null) => {
@@ -298,6 +314,7 @@ export function ToolMarket() {
         `DOM ${document.querySelectorAll('.market-card').length}`,
         `网格 ${size(document.querySelector('.market-grid'))}`,
         `首卡 ${size(document.querySelector('.market-card'))}`,
+        `筛选 ${query.trim() || '—'}/${category}`,
         style ? `块 ${style.display}/${style.visibility}` : '块 —',
         // A page that scrolled away looks exactly like a page that emptied, and
         // the two need different fixes.
@@ -305,6 +322,10 @@ export function ToolMarket() {
         user ? '已登录' : '未登录',
         error ? '有错误' : '',
       ].filter(Boolean).join(' · ');
+      // A full catalogue with nothing shown is the only reading that means "the
+      // list went away", so it is the only one worth colouring.
+      target.parentElement?.classList.toggle('market-probe--alert',
+        catalog.length > 0 && visible.length === 0);
     };
     draw();
     const timer = window.setInterval(draw, 500);
@@ -313,7 +334,7 @@ export function ToolMarket() {
       window.clearInterval(timer);
       document.removeEventListener('click', draw, true);
     };
-  }, [catalog, visible, user, error]);
+  }, [catalog, visible, user, error, query, category]);
 
   const add = (item: McpCatalogEntry) => {
     if (!user) { askToSignIn('sign_in'); return; }
@@ -348,7 +369,14 @@ export function ToolMarket() {
       <button type="button" className="agent-button" onClick={() => void reload()}
         disabled={retrying}>{retrying ? t('market.loading') : t('market.retry')}</button>
     </div>}
-    {!user && <p className="market-hint">{t('market.signIn')}</p>}
+    {/* A dropped session is stated as a state with a way out, not as a grey
+        sentence where the shelf used to be: "signed out" and "nothing to show"
+        are different problems and only one of them is fixed by signing in. */}
+    {!user && <div className="market-signedout" role="status">
+      <p>{t('market.signIn')}</p>
+      <button type="button" className="agent-button agent-button--primary"
+        onClick={() => askToSignIn('sign_in')}>{t('market.signInAction')}</button>
+    </div>}
 
     {/* A dropped session is a banner on top of the shelf, not a reason to take
         the shelf away. `user` goes null on any single 401 -- an expired cookie,
@@ -382,6 +410,8 @@ export function ToolMarket() {
             looking like a bug in the data. */}
         <p className="market-count">
           {t('market.catalogCount', { total: catalog.length, shown: visible.length })}
+          {filtering && <button type="button" className="market-clear" onClick={clearFilters}>
+            {t('market.showAll', { count: catalog.length })}</button>}
         </p>
       </div>}
 
@@ -391,8 +421,18 @@ export function ToolMarket() {
           server or a real removal, and the reader is the one who can tell. */}
       {stale && <p className="market-hint">{t('market.stale')}</p>}
       {loaded && !catalog.length && <p className="market-hint">{t('market.emptyCatalog')}</p>}
-      {loaded && !!catalog.length && !visible.length &&
-        <p className="market-hint">{t('market.noMatch')}</p>}
+      {/* An empty grid under a full filter bar is the one screen that reads as
+          "the list disappeared". It names the filter that removed the rows and
+          offers the single click that brings them back, instead of a grey line
+          that is easy to read as an empty deployment. */}
+      {loaded && !!catalog.length && !visible.length && <div className="market-nomatch" role="status">
+        <p className="market-nomatch-title">{t('market.noMatch')}</p>
+        {!!filterParts.length && <p className="market-hint">
+          {filterParts.join(' · ')} · {t('market.catalogCount', { total: catalog.length, shown: 0 })}
+        </p>}
+        <button type="button" className="agent-button" onClick={clearFilters}>
+          {t('market.showAll', { count: catalog.length })}</button>
+      </div>}
       <div className="market-grid">
         {visible.map(item => <article className="market-card" key={item.id}>
           <header>
