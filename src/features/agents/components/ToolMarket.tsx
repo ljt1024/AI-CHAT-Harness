@@ -139,7 +139,11 @@ export function ToolMarket() {
     if (signal?.aborted) return;
 
     if (catalogResult.status === 'fulfilled') {
-      const answer = catalogResult.value;
+      // A 200 that is not an array -- a proxy's error page, a half-deployed
+      // server, a body someone rewrote -- used to throw here, outside any catch,
+      // and the panel then showed whatever it had before. Reading it as "no
+      // rows" at least keeps the shelf and says what happened.
+      const answer = Array.isArray(catalogResult.value) ? catalogResult.value : [];
       // An answer of "no services at all" while the shelf is full is a
       // half-started server, not a catalogue that vanished: keep the rows and let
       // the next refresh correct them, rather than telling the reader the
@@ -148,7 +152,9 @@ export function ToolMarket() {
       setCatalog(previous => (answer.length || !previous.length ? answer : previous));
       setStale(emptied);
     }
-    if (serversResult.status === 'fulfilled') setServers(serversResult.value);
+    if (serversResult.status === 'fulfilled') {
+      setServers(Array.isArray(serversResult.value) ? serversResult.value : []);
+    }
 
     const failure = catalogResult.status === 'rejected' ? catalogResult.reason
       : serversResult.status === 'rejected' ? serversResult.reason : null;
@@ -170,7 +176,13 @@ export function ToolMarket() {
     // from that account's cache, so there is nothing to clear on the first pass.
     if (owner.current !== ownerId) {
       owner.current = ownerId;
-      const cached = readCache(ownerId);
+      // sessionStorage is a second-best copy: private mode, a full quota and a
+      // cleared profile all make it unreadable while the page itself still holds
+      // the answer. Reading only the copy meant a session that flickered to
+      // signed-out and back -- any single 401 does that -- wiped a shelf that was
+      // on screen a moment earlier. The in-memory answer is the first choice.
+      const cached = readCache(ownerId)
+        ?? (lastAnswer && lastAnswer.owner === ownerId ? lastAnswer.data : null);
       setCatalog(cached?.catalog ?? []);
       setServers(cached?.servers ?? []);
       setLoaded(!!cached);
@@ -183,10 +195,38 @@ export function ToolMarket() {
 
   useEffect(() => {
     if (!ownerId || !loaded) return;
+    // "Nothing" is never worth remembering as this account's answer: an empty
+    // catalogue in a deployment that had rows a moment ago is a half-started or
+    // failing server, and storing it would make the next remount paint the one
+    // screen the panel exists to avoid.
+    if (!catalog.length && lastAnswer && lastAnswer.owner === ownerId
+        && lastAnswer.data.catalog.length) return;
     const answer = { catalog, servers };
     lastAnswer = { owner: ownerId, data: answer };
     writeCache(ownerId, answer);
   }, [ownerId, loaded, catalog, servers]);
+
+  // A last line of defence, and a blunt one: if this page has seen a catalogue
+  // and the state is now empty, put the answer back. Every path that empties it
+  // -- an account change, a failed read, an answer that arrived as zero -- ends
+  // on the same screen, and one of them is always a bug. The reader does not
+  // care which; they care that the shelf they were reading is still there.
+  // `lastAnswer` is per page load, so a genuine removal still lands on reload.
+  useEffect(() => {
+    if (!ownerId || catalog.length) return;
+    if (!lastAnswer || lastAnswer.owner !== ownerId || !lastAnswer.data.catalog.length) return;
+    setCatalog(lastAnswer.data.catalog);
+    setServers(lastAnswer.data.servers);
+    setLoaded(true);
+  }, [ownerId, catalog]);
+
+  // Development-only readout. "The list disappeared" has three different causes
+  // -- no rows in state, rows in state that were never painted, or rows painted
+  // and covered -- and they are indistinguishable on screen. This reports which
+  // one it is from the live DOM, so the next report is a measurement rather than
+  // another guess. It writes through a ref instead of state: an observer that
+  // re-renders the thing it observes would be a suspect in its own case.
+  const probe = useRef<HTMLSpanElement>(null);
 
   const run = useCallback(async (key: string, action: () => Promise<unknown>) => {
     setBusy(key);
@@ -241,6 +281,40 @@ export function ToolMarket() {
 
   const installedTools = servers.reduce((total, server) => total + server.tools.length, 0);
 
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const size = (node: Element | null) => {
+      if (!node) return '—';
+      const box = node.getBoundingClientRect();
+      return `${Math.round(box.width)}×${Math.round(box.height)}`;
+    };
+    const draw = () => {
+      const target = probe.current;
+      if (!target) return;
+      const market = document.querySelector('.market');
+      const style = market ? getComputedStyle(market) : null;
+      target.textContent = [
+        `目录 ${catalog.length}`, `显示 ${visible.length}`,
+        `DOM ${document.querySelectorAll('.market-card').length}`,
+        `网格 ${size(document.querySelector('.market-grid'))}`,
+        `首卡 ${size(document.querySelector('.market-card'))}`,
+        style ? `块 ${style.display}/${style.visibility}` : '块 —',
+        // A page that scrolled away looks exactly like a page that emptied, and
+        // the two need different fixes.
+        `滚 ${Math.round(window.scrollY)}`,
+        user ? '已登录' : '未登录',
+        error ? '有错误' : '',
+      ].filter(Boolean).join(' · ');
+    };
+    draw();
+    const timer = window.setInterval(draw, 500);
+    document.addEventListener('click', draw, true);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('click', draw, true);
+    };
+  }, [catalog, visible, user, error]);
+
   const add = (item: McpCatalogEntry) => {
     if (!user) { askToSignIn('sign_in'); return; }
     // A credential the user has to look up deserves a step of its own; anything
@@ -269,7 +343,12 @@ export function ToolMarket() {
     </div>}
     {!user && <p className="market-hint">{t('market.signIn')}</p>}
 
-    {user && <>
+    {/* A dropped session is a banner on top of the shelf, not a reason to take
+        the shelf away. `user` goes null on any single 401 -- an expired cookie,
+        one background read -- and gating the whole body on it meant one failed
+        request erased a catalogue the reader was looking at. What is already on
+        screen stays; only an account that never had anything sees just the hint. */}
+    {(user || !!catalog.length || !!servers.length) && <>
       <header className="market-head">
         <h2>{t('market.catalogTitle')}</h2>
         <p>{t('market.catalogHint')}</p>
@@ -365,7 +444,7 @@ export function ToolMarket() {
         </li>)}
       </ul>
 
-      <details className="market-manual">
+      {user && <details className="market-manual">
         <summary>{t('market.manual')}</summary>
         <p className="market-hint">{t('market.manualHint')}</p>
         <div className="market-form">
@@ -396,8 +475,12 @@ export function ToolMarket() {
             await importMcpServer(paste);
             setPaste('');
           })}>{t('cap.import')}</button>
-      </details>
+      </details>}
     </>}
+
+    {import.meta.env.DEV && <p className="market-hint market-probe">
+      <span ref={probe} />
+    </p>}
 
     <Dialog isOpen={target !== null} onClose={() => setTarget(null)} title={t('market.installTitle')}
       type="confirm" confirmText={t('market.add')}

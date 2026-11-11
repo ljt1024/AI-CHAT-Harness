@@ -303,6 +303,15 @@
   font-size: 12px;
 }
 
+/* Development-only: one muted line that says whether the rows exist in state,
+   in the DOM, and on screen with a size. Hidden from production builds. */
+.market-probe {
+  font-size: 11px;
+  opacity: 0.72;
+  font-variant-numeric: tabular-nums;
+  user-select: text;
+}
+
 @media (max-width: 640px) {
   .market-row {
     flex-direction: column;
