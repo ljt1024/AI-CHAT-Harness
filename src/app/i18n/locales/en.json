@@ -334,6 +334,7 @@
   "market.remove": "Remove",
   "market.removeBody": "Remove {name} from your account? Agents that pin it lose it too.",
   "market.removeTitle": "Remove service",
+  "market.retry": "Retry",
   "market.searchPlaceholder": "Search services by name or use case",
   "market.serviceDocs": "Service guide",
   "market.signIn": "Sign in to browse and connect tool services.",

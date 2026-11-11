@@ -49,7 +49,11 @@ export function ToolMarket() {
   const { user, askToSignIn } = useAuth();
   const [catalog, setCatalog] = useState<McpCatalogEntry[]>([]);
   const [servers, setServers] = useState<McpServerSummary[]>([]);
-  const [loading, setLoading] = useState(true);
+  // "loaded" rather than "loading": what the page must never do is paint an empty
+  // catalogue as if the deployment had none. Until a request has actually
+  // succeeded the panel says it is fetching, and a refresh keeps the rows that
+  // are already on screen instead of blinking them away.
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const [query, setQuery] = useState('');
@@ -59,6 +63,7 @@ export function ToolMarket() {
   const [removing, setRemoving] = useState<McpServerSummary | null>(null);
   const [form, setForm] = useState({ id: '', url: '', token: '' });
   const [paste, setPaste] = useState('');
+  const [retrying, setRetrying] = useState(false);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -67,17 +72,16 @@ export function ToolMarket() {
       setCatalog(nextCatalog);
       setServers(nextServers);
       setError('');
+      setLoaded(true);
     } catch (cause) {
       if (!signal?.aborted) setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      if (!signal?.aborted) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     // The catalogue needs an account; the guest path is the sign-in prompt, not
     // a request that would come back 401 and look like a broken page.
-    if (!user) { setLoading(false); return; }
+    if (!user) return;
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
@@ -97,6 +101,18 @@ export function ToolMarket() {
       setBusy('');
     }
   }, [load]);
+
+  // The only recovery a failed read has: ask again, on purpose, with the reason
+  // still on screen. A refresh that kept the rows already loaded is `load`
+  // itself -- this one is for the case where there is nothing to keep.
+  const reload = async () => {
+    setRetrying(true);
+    try {
+      await load();
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const nameOf = useCallback((item: McpCatalogEntry) =>
     (language === 'en' && item.nameEn) || item.name, [language]);
@@ -142,7 +158,14 @@ export function ToolMarket() {
   };
 
   return <section className="market">
-    {error && <p className="market-error" role="alert">{error}</p>}
+    {/* A failure is reported next to the reason, not as an empty catalogue: the
+        two look identical to a reader and only one of them means "there is
+        nothing here". */}
+    {error && <div className="market-error" role="alert">
+      <span>{error}</span>
+      <button type="button" className="agent-button" onClick={() => void reload()}
+        disabled={retrying}>{retrying ? t('market.loading') : t('market.retry')}</button>
+    </div>}
     {!user && <p className="market-hint">{t('market.signIn')}</p>}
 
     {user && <>
@@ -151,7 +174,7 @@ export function ToolMarket() {
         <p>{t('market.catalogHint')}</p>
       </header>
 
-      {!loading && !!catalog.length && <div className="market-browse">
+      {loaded && !!catalog.length && <div className="market-browse">
         <input type="search" className="market-search" value={query}
           placeholder={t('market.searchPlaceholder')} aria-label={t('market.searchPlaceholder')}
           onChange={event => setQuery(event.target.value)} />
@@ -168,9 +191,9 @@ export function ToolMarket() {
         </div>
       </div>}
 
-      {loading && <p className="market-hint">{t('market.loading')}</p>}
-      {!loading && !catalog.length && <p className="market-hint">{t('market.emptyCatalog')}</p>}
-      {!loading && !!catalog.length && !visible.length &&
+      {!loaded && !error && <p className="market-hint">{t('market.loading')}</p>}
+      {loaded && !catalog.length && <p className="market-hint">{t('market.emptyCatalog')}</p>}
+      {loaded && !!catalog.length && !visible.length &&
         <p className="market-hint">{t('market.noMatch')}</p>}
       <div className="market-grid">
         {visible.map(item => <article className="market-card" key={item.id}>
@@ -204,7 +227,7 @@ export function ToolMarket() {
         {installedTools > 0 && <p className="market-hint">
           {t('market.toolsTotal', { count: installedTools })} · {t('market.budgetHint')}</p>}
       </header>
-      {!loading && !servers.length && <p className="market-hint">{t('market.emptyMine')}</p>}
+      {loaded && !servers.length && <p className="market-hint">{t('market.emptyMine')}</p>}
       <ul className="market-list">
         {servers.map(server => <li className="market-row" key={server.id}>
           <div className="market-row-main">

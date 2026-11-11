@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import { useAuth } from '@/app/providers/AuthContext';
 import Dialog from '@/shared/components/Dialog';
+import ErrorBoundary from '@/shared/components/ErrorBoundary';
 import { AgentWizard } from '@/features/agents/components/AgentWizard';
 import { ToolMarket } from '@/features/agents/components/ToolMarket';
 import { deleteAgent, fetchAgents } from '@/features/agents/api';
@@ -28,7 +29,22 @@ export default function Agents() {
   // of services those agents may call. A tab beats a second route here because
   // "which tools does this deployment offer" is answered in the same breath as
   // "what can I build with them".
-  const [view, setView] = useState<'agents' | 'market'>('agents');
+  //
+  // The tab is in the address bar rather than in React state. State only survives
+  // as long as this component does: a dev-server reload, a crashed render, or a
+  // session that expired mid-page all remounted it, which dropped the reader back
+  // onto the agent list with the catalogue gone -- a visible blink and then
+  // nothing. A URL also makes the answer shareable and the back button truthful.
+  const [params, setParams] = useSearchParams();
+  const view: 'agents' | 'market' = params.get('tab') === 'tools' ? 'market' : 'agents';
+  const setView = (next: 'agents' | 'market') => {
+    const query = new URLSearchParams(params);
+    if (next === 'market') query.set('tab', 'tools');
+    else query.delete('tab');
+    // Pushed rather than replaced: switching tabs is a place you can come back
+    // from, so the back button should return to the list it left.
+    setParams(query);
+  };
 
   // A visitor may read the catalogue and run the shared agent, but every write
   // answers 401. Asking for an account up front beats a wizard whose catalogue
@@ -102,7 +118,9 @@ export default function Agents() {
           onClick={() => setView('market')}>{t('agents.tabTools')}</button>
       </nav>
 
-      {view === 'market' && <ToolMarket />}
+      {/* One boundary per tab: a failure inside the marketplace must cost the
+          marketplace, not the page it is only one half of. */}
+      {view === 'market' && <ErrorBoundary label="tool-market"><ToolMarket /></ErrorBoundary>}
 
       {view === 'agents' && <>
       {error && <p className="agent-wizard-error" role="alert">{t('agents.loadFailed')} {error}</p>}

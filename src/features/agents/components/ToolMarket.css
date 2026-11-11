@@ -250,6 +250,10 @@
   position: sticky;
   top: 8px;
   z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   align-self: flex-start;
   margin: 0;
   padding: 8px 12px;
@@ -258,6 +262,16 @@
   background: var(--surface-color);
   color: var(--danger-color);
   font-size: 13px;
+}
+
+.market-error span {
+  min-width: 0;
+}
+
+.market-error .agent-button {
+  flex: none;
+  padding: 4px 12px;
+  font-size: 12px;
 }
 
 .market-hint {

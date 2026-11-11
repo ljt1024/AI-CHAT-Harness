@@ -334,6 +334,7 @@
   "market.remove": "删除",
   "market.removeBody": "从你的账号中删除 {name}？已绑定的智能体会同步移除这个服务。",
   "market.removeTitle": "删除服务",
+  "market.retry": "重试",
   "market.searchPlaceholder": "搜索服务名称或用途",
   "market.serviceDocs": "服务说明",
   "market.signIn": "登录后可以查看并接入工具服务。",
