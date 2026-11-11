@@ -304,6 +304,7 @@
   "market.adding": "Connecting…",
   "market.allCategories": "All",
   "market.budgetHint": "at most 128 per run, so keep only what you use.",
+  "market.catalogCount": "Showing {shown} of {total} services",
   "market.catalogHint": "The operator chooses and hosts the address; you only bring your own access token.",
   "market.catalogTitle": "Recommended services",
   "market.category.data": "Company data",

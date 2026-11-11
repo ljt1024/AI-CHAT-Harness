@@ -189,6 +189,13 @@ export function ToolMarket() {
             {CATEGORY_LABELS[name] ? t(CATEGORY_LABELS[name]) : name} <span>{count}</span>
           </button>)}
         </div>
+        {/* The filter bar counts the catalogue; this counts what is below it. They
+            differ only while a search or a category is narrowing the list, and
+            saying so out loud is what stops "14 above, nothing below" from
+            looking like a bug in the data. */}
+        <p className="market-count">
+          {t('market.catalogCount', { total: catalog.length, shown: visible.length })}
+        </p>
       </div>}
 
       {!loaded && !error && <p className="market-hint">{t('market.loading')}</p>}

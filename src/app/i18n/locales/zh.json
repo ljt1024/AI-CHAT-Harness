@@ -304,6 +304,7 @@
   "market.adding": "正在连接……",
   "market.allCategories": "全部",
   "market.budgetHint": "单轮最多 128 个，装多了请只保留常用的。",
+  "market.catalogCount": "共 {total} 个服务，当前显示 {shown} 个",
   "market.catalogHint": "地址由管理员挑选并托管，你只需要提供自己的访问令牌。",
   "market.catalogTitle": "推荐服务",
   "market.category.data": "企业数据",

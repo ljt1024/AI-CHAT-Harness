@@ -2,6 +2,10 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+  /* A flex column child is stretched, but its width is still negotiated with the
+     parent. Saying it may shrink below its content keeps the grid below from
+     inheriting a width of zero on engines that measure children first. */
+  min-width: 0;
 }
 
 .market-head h2 {
@@ -65,20 +69,39 @@
   color: var(--secondary-color);
 }
 
+.market-count {
+  margin: 0;
+  align-self: flex-end;
+  color: var(--text-muted-color);
+  font-size: 11px;
+}
+
+/* auto-fit with a floor that yields to the container, rather than auto-fill with
+   a fixed 280px floor. The fixed floor can resolve to zero columns when the grid
+   is measured before its parent has a width -- a flex child inside a flex column
+   is exactly that case -- and zero columns paints as an empty block under a
+   filter bar that says "14". min(100%, 280px) makes one column the floor, so the
+   worst case is a single narrow column instead of nothing. */
 .market-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
   gap: 16px;
+  min-width: 0;
 }
 
 .market-card {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
   padding: 18px;
   border-radius: 18px;
   border: 1px solid var(--border-color);
   background: var(--surface-color);
+  /* Stated rather than inherited: a card that renders with inherited colour
+     disappears under an extension that rewrites the ancestor's colour, and an
+     invisible card is indistinguishable from a missing one. */
+  color: var(--text-color);
   box-shadow: var(--card-shadow);
 }
 
