@@ -333,6 +333,13 @@ export function ToolMarket() {
   };
 
   return <section className="market">
+    {/* First thing on the page in development: when the shelf goes blank this
+        line is what the reader sees in its place, and it says whether the rows
+        are missing from state, from the DOM, or only from the screen. */}
+    {import.meta.env.DEV && <p className="market-hint market-probe">
+      <span ref={probe} />
+    </p>}
+
     {/* A failure is reported next to the reason, not as an empty catalogue: the
         two look identical to a reader and only one of them means "there is
         nothing here". */}
@@ -477,10 +484,6 @@ export function ToolMarket() {
           })}>{t('cap.import')}</button>
       </details>}
     </>}
-
-    {import.meta.env.DEV && <p className="market-hint market-probe">
-      <span ref={probe} />
-    </p>}
 
     <Dialog isOpen={target !== null} onClose={() => setTarget(null)} title={t('market.installTitle')}
       type="confirm" confirmText={t('market.add')}
