@@ -390,9 +390,16 @@ export function ToolMarket() {
       </header>
 
       {loaded && !!catalog.length && <div className="market-browse">
-        <input type="search" className="market-search" value={query}
+        <input type="search"
+          className={`market-search${query.trim() ? ' market-search--on' : ''}`}
+          value={query}
           placeholder={t('market.searchPlaceholder')} aria-label={t('market.searchPlaceholder')}
-          onChange={event => setQuery(event.target.value)} />
+          onChange={event => setQuery(event.target.value)}
+          onKeyDown={event => {
+            // Esc is the reflex for "stop filtering"; without it the only way
+            // out is finding the control that clears it.
+            if (event.key === 'Escape' && query) { event.stopPropagation(); setQuery(''); }
+          }} />
         <div className="market-filters" role="group" aria-label={t('market.allCategories')}>
           <button type="button" className={`market-chip${category === ALL ? ' market-chip--on' : ''}`}
             aria-pressed={category === ALL} onClick={() => setCategory(ALL)}>

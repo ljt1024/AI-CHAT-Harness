@@ -40,6 +40,14 @@
   font-size: 13px;
 }
 
+/* A field with text in it is the single most likely reason a full catalogue
+   shows nothing, so the field itself has to look active -- not just the count
+   line underneath it. */
+.market-search--on {
+  border-color: var(--secondary-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--secondary-color) 18%, transparent);
+}
+
 .market-filters {
   display: flex;
   flex-wrap: wrap;

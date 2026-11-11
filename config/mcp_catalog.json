@@ -102,13 +102,14 @@
     "amap": {
       "name": "高德地图",
       "name_en": "Amap",
-      "summary": "地理编码、POI 搜索、路径规划与天气，国内出行与到店场景覆盖最全。",
-      "summary_en": "Geocoding, POI search, routing and weather for travel in mainland China.",
+      "summary": "地理编码、POI 搜索、路径规划与天气。端点当前握手超时，暂时下线，恢复后会重新启用。",
+      "summary_en": "Geocoding, POI search, routing and weather. The endpoint currently times out during handshake, so it is switched off until it recovers.",
       "category": "maps",
       "url": "https://mcp.amap.com/mcp?key={token}",
       "auth": "token",
       "docs": "https://lbs.amap.com/api/mcp-server/summary",
-      "verified": true
+      "verified": false,
+      "enabled": false
     },
     "qqmap": {
       "name": "腾讯位置服务",
