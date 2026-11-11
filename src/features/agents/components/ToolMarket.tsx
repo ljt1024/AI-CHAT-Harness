@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/app/providers/AuthContext';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import Dialog from '@/shared/components/Dialog';
+import { useFilterGuard } from '@/shared/hooks/useFilterGuard';
 import type { TranslationKey } from '@/app/i18n';
 import {
   deleteMcpServer, fetchMcpCatalog, fetchMcpServers, importMcpServer,
@@ -113,6 +114,9 @@ export function ToolMarket() {
   const [stale, setStale] = useState(false);
   const [busy, setBusy] = useState('');
   const [query, setQuery] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
+  // The filter never shows a value the reader did not type; see useFilterGuard.
+  useFilterGuard(searchRef, query, () => setQuery(''));
   const [category, setCategory] = useState(ALL);
   const [target, setTarget] = useState<McpCatalogEntry | null>(null);
   const [token, setToken] = useState('');
@@ -390,9 +394,21 @@ export function ToolMarket() {
       </header>
 
       {loaded && !!catalog.length && <div className="market-browse">
-        <input type="search"
+        {/* A filter is not a credential field, but a password manager cannot tell:
+            with no name and no autocomplete hint it fills the saved account name
+            in on load -- the account name appeared in this box as a "default".
+            That value filters the shelf down to nothing, so a login detail
+            arrives on screen as "the list disappeared". The hints below keep the
+            managers out; useFilterGuard covers what they write anyway. */}
+        <input type="search" ref={searchRef}
           className={`market-search${query.trim() ? ' market-search--on' : ''}`}
           value={query}
+          name="mcp-service-filter"
+          autoComplete="off"
+          spellCheck={false}
+          data-1p-ignore="true"
+          data-lpignore="true"
+          data-form-type="other"
           placeholder={t('market.searchPlaceholder')} aria-label={t('market.searchPlaceholder')}
           onChange={event => setQuery(event.target.value)}
           onKeyDown={event => {

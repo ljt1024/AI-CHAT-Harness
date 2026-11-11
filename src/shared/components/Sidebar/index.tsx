@@ -10,6 +10,7 @@ import { useLanguage } from '@/app/providers/LanguageContext'
 import EmailBindDialog from '@/features/auth/EmailBindDialog'
 import { getSelectId, storageSelectId, type CovIdListItem } from '@/shared/utils/localMessages'
 import { APP_INITIALS, APP_NAME } from '@/shared/config/brand'
+import { useFilterGuard } from '@/shared/hooks/useFilterGuard'
 import './index.css'
 
 function SidebarIcon({ name }: { name: 'search' | 'panel' | 'new' | 'more' | 'records' | 'chat' | 'agents' }) {
@@ -70,6 +71,9 @@ export default function Sidebar({ isLoading, account }: {
   }, [dispatch])
 
   useEffect(() => { if (searching && open) searchRef.current?.focus() }, [searching, open])
+  // The field is a filter over chat titles, not a login: it must never open with
+  // the saved account name in it. See useFilterGuard.
+  useFilterGuard(searchRef, query, () => setQuery(''));
   useEffect(() => {
     if (previousOpen.current !== open) (open ? collapseRef : expandRef).current?.focus()
     previousOpen.current = open
@@ -120,7 +124,7 @@ export default function Sidebar({ isLoading, account }: {
         </header>
         <button type="button" className="newCov" disabled={isLoading} onClick={() => select()}><SidebarIcon name="new" /><span>{t('sidebar.newChat')}</span></button>
         <Link className="sidebar-agents" to="/agents"><SidebarIcon name="agents" /><span>{t('agents.title')}</span></Link>
-        {searching && <div className="sidebar-search"><SidebarIcon name="search" /><input ref={searchRef} type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={t('sidebar.searchPlaceholder')} aria-label={t('sidebar.searchPlaceholder')} /></div>}
+        {searching && <div className="sidebar-search"><SidebarIcon name="search" /><input ref={searchRef} type="search" value={query} name="conversation-filter" autoComplete="off" spellCheck={false} data-1p-ignore="true" data-lpignore="true" data-form-type="other" onChange={event => setQuery(event.target.value)} placeholder={t('sidebar.searchPlaceholder')} aria-label={t('sidebar.searchPlaceholder')} /></div>}
         <nav className="covList" aria-label={t('sidebar.chatHistory')}>
           <div className="sidebar-history-tools"><button type="button" className="sidebar-icon-button" disabled={isLoading} aria-label={t('sidebar.manage')} title={t('sidebar.manage')} onClick={() => setRecords(true)}><SidebarIcon name="records" /></button></div>
           {groups.map(([label, items]) => <section className="sidebar-group" key={label} aria-label={label}>
