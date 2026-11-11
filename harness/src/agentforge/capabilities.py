@@ -7,7 +7,7 @@ from pydantic import (BaseModel, Field, ValidationError, field_validator,
                       model_validator)
 
 from agentforge import secrets_box
-from agentforge.mcp_client import discover_tools
+from agentforge.mcp_client import TOKEN_PLACEHOLDER, discover_tools
 from agentforge.redact import mask_url
 
 DISCOVER_TIMEOUT = 30.0
@@ -51,8 +51,16 @@ class MCPServerRequest(BaseModel):
     def validate_url(cls, url):
         parsed = urlsplit(url)
         if (parsed.scheme not in {"http", "https"} or not parsed.hostname
-                or parsed.username or parsed.password or parsed.fragment or parsed.query):
-            raise ValueError("Use an HTTP(S) MCP URL without credentials, query or fragment.")
+                or parsed.username or parsed.password or parsed.fragment):
+            raise ValueError("Use an HTTP(S) MCP URL without credentials or fragment.")
+        if TOKEN_PLACEHOLDER in parsed.netloc:
+            raise ValueError("Put the token in the path or query, not the host name.")
+        # A key typed straight into the query would be stored beside the row's
+        # encrypted copy, so the only accepted query is the one that names the
+        # parameter and leaves the value to the token field.
+        if parsed.query and TOKEN_PLACEHOLDER not in parsed.query:
+            raise ValueError("Put the key in the token field and mark its place in the URL "
+                             "with {token}, e.g. https://host/mcp?key={token}.")
         return url
 
     @field_validator("token")

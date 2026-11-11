@@ -16,6 +16,55 @@
   font-size: 13px;
 }
 
+.market-browse {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.market-search {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: var(--panel-bg);
+  color: var(--text-color);
+  font-family: var(--font-body);
+  font-size: 13px;
+}
+
+.market-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* A category count belongs to the label, not to the tap target: the chip is one
+   button, so the number sits inside it in a lighter weight. */
+.market-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--button-ghost-bg);
+  color: var(--text-muted-color);
+  font-family: var(--font-body);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.market-chip span {
+  opacity: 0.65;
+}
+
+.market-chip--on {
+  border-color: var(--secondary-color);
+  background: var(--surface-color);
+  color: var(--secondary-color);
+}
+
 .market-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));

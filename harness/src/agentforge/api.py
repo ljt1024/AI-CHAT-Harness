@@ -1149,7 +1149,7 @@ def create_app(settings=None, store=None, gateway=None):
                 raise HTTPException(422, "MCP server rejected the access token. For a hosted "
                     "service, supply the token from the same account that deployed it.") from None
             raise HTTPException(502, "MCP discovery failed. Check the URL and the Streamable "
-                "HTTP transport.") from None
+                "HTTP transport, and that the access token is valid.") from None
         stored = {**record, "token": secrets_box.encrypt(record.get("token"))}
         server = await store.put("mcp_servers", {**stored, "tools": [
             {"name": tool.name, "description": tool.description, "schema": tool.schema} for tool in tools]})

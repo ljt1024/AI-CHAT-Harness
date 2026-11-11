@@ -147,8 +147,13 @@ export interface McpCatalogEntry {
   id: string;
   name: string;
   summary: string;
+  /** Operator data, not UI copy: English falls back to the Chinese text. */
+  nameEn: string;
+  summaryEn: string;
   category: string;
-  auth: 'none' | 'token';
+  auth: 'none' | 'token' | 'optional';
+  /** Where the credential goes. Query-parameter services cannot read a bearer header. */
+  tokenIn: 'header' | 'query';
   docs: string;
   verified: boolean;
   private: boolean;

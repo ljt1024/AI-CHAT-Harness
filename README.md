@@ -243,14 +243,18 @@ scripts/audit-skills.sh [dir]                              # 安装前静态审�
 - **可以只关不删**：`PATCH /api/mcp/servers/{id}` 带 `{"enabled": false}` 把服务停用，URL、令牌、工具清单都留着。停用的服务不会自动装配，也就不会每轮多花一次发现往返、多记一条「不可用」；pin 仍然压过开关——点名要用的服务照旧参与，坏掉就报错而不是悄悄少几个工具。
 - 也可以直接粘贴平台给出的整段配置（`{"mcpServers": {"fetch": {"type": "streamable_http", "url": "...", "headers": {"Authorization": "Bearer ..."}}}}`）：服务标识取自配置里的键名，`headers` 只接受 `Authorization`，令牌折进同一条记录；同一 URL 重复粘贴是刷新而不是新增，适合令牌轮换。
 
-**工具广场**（`/agents` 页第二个 tab）：目录由运营方维护在 `config/mcp_catalog.json`，启动时播种为共享只读的 `mcp_catalog` 行，每条给出名称、说明、地址、是否需要令牌、去哪申请（`docs`）。用户点「添加」只提交自己的令牌——**地址永远来自目录，卡片上没有填 URL 的地方**。这不是界面上的取舍，而是 SSRF 的边界：MCP 调用从宿主进程发出，注册一个 URL 就等于让本机去连那个地址，而本机旁边就是 MongoDB 和云元数据端点。因此：
+**工具广场**（`/agents` 页第二个 tab）：目录由运营方维护在 `config/mcp_catalog.json`，启动时播种为共享只读的 `mcp_catalog` 行，每条给出名称、说明、地址、是否需要令牌、去哪申请（`docs`）。仓库自带的这份目录预置了 13 个**公共**服务——文档与代码（Context7、DeepWiki、Cloudflare、Microsoft Learn、AWS）、搜索与抓取（Exa、Firecrawl、博查、Tavily）、地图出行（高德、腾讯位置、百度）、企业数据（天眼查）——所以新部署打开页面就有东西可接，运营方按需增删。用户点「添加」只提交自己的令牌——**地址永远来自目录，卡片上没有填 URL 的地方**。这不是界面上的取舍，而是 SSRF 的边界：MCP 调用从宿主进程发出，注册一个 URL 就等于让本机去连那个地址，而本机旁边就是 MongoDB 和云元数据端点。因此：
 
 - 注册默认拒绝回环、RFC1918、链路本地（含 `169.254.169.254`）；`MCP_ALLOW_PRIVATE=true` 才放行，只在本机/内网自建服务时打开。
 - `config/mcp.json` 是运营方自己的清单，视为可信，仍可注册 `127.0.0.1:9000`；任何用户在页面上输入的地址不享受这个待遇。
 - 目录条目可用 `"private": true` 声明自己是内网服务，这时安装放行——地址仍是运营方给的，不是用户填的。
+- **密钥可以放在链接参数里**：高德 `?key=`、百度 `?ak=`、Tavily `?tavilyApiKey=` 这类服务只能这样传，条目写成 `https://mcp.amap.com/mcp?key={token}`，`{token}` 由安装者的令牌填充（`endpoint()` 在唯一出网点替换并转义）。库里存的是模板，密钥只有加密的 `token` 一列，所有人的行地址一致。反过来，写死查询串会被拒绝——分不清那是密钥还是普通参数，而目录文件是要提交到仓库的。
+- `"auth": "optional"` 给「不填密钥也能试用、额度有限」的托管服务（Exa、Firecrawl）：卡片标「可选密钥」，不填直接装，此时 `{token}` 参数会被整段去掉，而不是发出一个空值。
+- 名称与说明带 `name_en` / `summary_en`：目录是运营数据，不能放进语言文件，英文界面下缺译时回落中文而不是空白。
 - 令牌落库加密（Fernet，`MCP_SECRET_KEY` 或 `AGENTFORGE_WORKSPACE/.mcp-key`，0600）；升级前写入的明文行在启动时迁移一次。轮换密钥会让旧令牌读不出来并明确报错，而不是静默变成「无令牌」。
 - 接口：`GET /api/mcp/catalog`、`POST /api/mcp/catalog/{id}/install`（请求体只有 `{token}`）。**注册是同步的**：安装必须验证凭证，201 立刻返回工具清单；页面负责显示等待与失败原因。
-- 手动填写地址与粘贴导入仍在页面底部的「手动添加服务」里——这是唯一需要键入 URL 的路径，也是唯一会被地址闸门拦下的路径（见 [ADR-0029](docs/adr/0029-the-catalogue-owns-the-address.md)）。
+- 手动填写地址与粘贴导入仍在页面底部的「手动添加服务」里——这是唯一需要键入 URL 的路径，也是唯一会被地址闸门拦下的路径（见 [ADR-0029](docs/adr/0029-the-catalogue-owns-the-address.md)）。目录能列什么、密钥放在哪，见 [ADR-0030](docs/adr/0030-a-catalogue-can-list-somebody-elses-services.md)。
+- **装上了不等于密钥有效**：百度会用假 `ak` 返回 14 个工具，调用时才报错。页面如实显示发现结果，不做「绿勾即开通」的暗示。另外只支持 Streamable HTTP 与 Bearer/查询参数两种鉴权，纯 OAuth（Notion、Linear、Sentry、飞书、钉钉）和纯 SSE 的服务不收录——卡片点不完，比没有卡片更糟。
 
 **启动文件**：把整份 `mcpServers` 写进 `config/mcp.json`（照 `config/mcp.example.json` 抄），启动时自动注册，不需要任何 HTTP 调用；适合放进编排脚本或在重启后恢复。条目支持 `"enabled": false`（保留配置但停用）。已注册的同 id 条目是刷新（令牌轮换即生效）而不是重复新增；文件里删掉一条**不会**删除已注册的服务——文件是播种，不是唯一真相。该文件含令牌，已进 `.gitignore`，权限按 600 写入。
 

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/app/providers/AuthContext';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import Dialog from '@/shared/components/Dialog';
+import type { TranslationKey } from '@/app/i18n';
 import {
   deleteMcpServer, fetchMcpCatalog, fetchMcpServers, importMcpServer,
   installCatalogServer, registerMcpServer, setMcpServerEnabled,
@@ -14,6 +15,27 @@ const PASTE_EXAMPLE =
   '{"mcpServers": {"fetch": {"type": "streamable_http", "url": "https://host/mcp", ' +
   '"headers": {"Authorization": "Bearer <token>"}}}}';
 
+// Categories are operator data, so an unknown one shows as written rather than
+// disappearing from the filter bar.
+const CATEGORY_LABELS: Record<string, TranslationKey> = {
+  docs: 'market.category.docs',
+  search: 'market.category.search',
+  maps: 'market.category.maps',
+  data: 'market.category.data',
+  development: 'market.category.development',
+};
+
+const ALL = 'all';
+
+// Reading order for the page: what a model needs to look something up comes
+// before what it needs to move through the world.
+const CATEGORY_ORDER = ['docs', 'search', 'maps', 'data', 'development'];
+
+const orderOf = (category: string) => {
+  const index = CATEGORY_ORDER.indexOf(category);
+  return index === -1 ? CATEGORY_ORDER.length : index;
+};
+
 /**
  * The catalogue, plus whatever this account already installed.
  *
@@ -23,13 +45,15 @@ const PASTE_EXAMPLE =
  * URL is typed, which is why it sits behind its own disclosure.
  */
 export function ToolMarket() {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
   const { user, askToSignIn } = useAuth();
   const [catalog, setCatalog] = useState<McpCatalogEntry[]>([]);
   const [servers, setServers] = useState<McpServerSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState(ALL);
   const [target, setTarget] = useState<McpCatalogEntry | null>(null);
   const [token, setToken] = useState('');
   const [removing, setRemoving] = useState<McpServerSummary | null>(null);
@@ -74,11 +98,37 @@ export function ToolMarket() {
     }
   }, [load]);
 
+  const nameOf = useCallback((item: McpCatalogEntry) =>
+    (language === 'en' && item.nameEn) || item.name, [language]);
+  const summaryOf = useCallback((item: McpCatalogEntry) =>
+    (language === 'en' && item.summaryEn) || item.summary, [language]);
+
+  const names = useMemo(() => new Map(catalog.map(item => [item.id, item])), [catalog]);
+
+  const categories = useMemo(() => {
+    const counts = new Map<string, number>();
+    catalog.forEach(item => counts.set(item.category, (counts.get(item.category) ?? 0) + 1));
+    return [...counts.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [catalog]);
+
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return catalog.filter(item => {
+      if (category !== ALL && item.category !== category) return false;
+      if (!needle) return true;
+      return [item.name, item.nameEn, item.summary, item.summaryEn, item.id]
+        .join(' ').toLowerCase().includes(needle);
+    }).sort((a, b) => orderOf(a.category) - orderOf(b.category)
+      || nameOf(a).localeCompare(nameOf(b), language === 'zh' ? 'zh-CN' : 'en'));
+  }, [catalog, category, query, language, nameOf]);
+
+  const installedTools = servers.reduce((total, server) => total + server.tools.length, 0);
+
   const add = (item: McpCatalogEntry) => {
     if (!user) { askToSignIn('sign_in'); return; }
     // A credential the user has to look up deserves a step of its own; anything
     // else installs on the click that expressed the intent.
-    if (item.auth === 'token') { setToken(''); setTarget(item); return; }
+    if (item.auth !== 'none') { setToken(''); setTarget(item); return; }
     void run(item.id, () => installCatalogServer(item.id));
   };
 
@@ -100,22 +150,43 @@ export function ToolMarket() {
         <h2>{t('market.catalogTitle')}</h2>
         <p>{t('market.catalogHint')}</p>
       </header>
+
+      {!loading && !!catalog.length && <div className="market-browse">
+        <input type="search" className="market-search" value={query}
+          placeholder={t('market.searchPlaceholder')} aria-label={t('market.searchPlaceholder')}
+          onChange={event => setQuery(event.target.value)} />
+        <div className="market-filters" role="group" aria-label={t('market.allCategories')}>
+          <button type="button" className={`market-chip${category === ALL ? ' market-chip--on' : ''}`}
+            aria-pressed={category === ALL} onClick={() => setCategory(ALL)}>
+            {t('market.allCategories')} <span>{catalog.length}</span>
+          </button>
+          {categories.map(([name, count]) => <button type="button" key={name}
+            className={`market-chip${category === name ? ' market-chip--on' : ''}`}
+            aria-pressed={category === name} onClick={() => setCategory(name)}>
+            {CATEGORY_LABELS[name] ? t(CATEGORY_LABELS[name]) : name} <span>{count}</span>
+          </button>)}
+        </div>
+      </div>}
+
       {loading && <p className="market-hint">{t('market.loading')}</p>}
       {!loading && !catalog.length && <p className="market-hint">{t('market.emptyCatalog')}</p>}
+      {!loading && !!catalog.length && !visible.length &&
+        <p className="market-hint">{t('market.noMatch')}</p>}
       <div className="market-grid">
-        {catalog.map(item => <article className="market-card" key={item.id}>
+        {visible.map(item => <article className="market-card" key={item.id}>
           <header>
-            <h3>{item.name}</h3>
-            {item.verified && <span className="market-tag">{t('market.verified')}</span>}
+            <h3>{nameOf(item)}</h3>
+            {!item.verified && <span className="market-tag market-tag--warn">{t('market.unverified')}</span>}
             {item.private && <span className="market-tag market-tag--warn">{t('market.private')}</span>}
             {!item.enabled && <span className="market-tag">{t('market.switchedOff')}</span>}
           </header>
-          <p>{item.summary || t('market.noSummary')}</p>
+          <p>{summaryOf(item) || t('market.noSummary')}</p>
           {item.docs && <a className="market-docs" href={item.docs} target="_blank" rel="noreferrer">
-            {t('market.getToken')}</a>}
+            {item.auth === 'none' ? t('market.serviceDocs') : t('market.getToken')}</a>}
           <footer>
             <span className="market-meta">
-              {item.auth === 'none' ? t('market.noAuth') : t('market.needsToken')}
+              {item.auth === 'none' ? t('market.noAuth')
+                : item.auth === 'optional' ? t('market.optionalAuth') : t('market.needsToken')}
             </span>
             <button type="button" className="agent-button agent-button--primary"
               disabled={item.installed || !item.enabled || busy === item.id}
@@ -130,13 +201,17 @@ export function ToolMarket() {
       <header className="market-head">
         <h2>{t('market.mine')}</h2>
         <p>{t('market.mineHint')}</p>
+        {installedTools > 0 && <p className="market-hint">
+          {t('market.toolsTotal', { count: installedTools })} · {t('market.budgetHint')}</p>}
       </header>
       {!loading && !servers.length && <p className="market-hint">{t('market.emptyMine')}</p>}
       <ul className="market-list">
         {servers.map(server => <li className="market-row" key={server.id}>
           <div className="market-row-main">
-            <strong>{server.id}</strong>
-            <small>{server.url}</small>
+            {/* A row installed from the catalogue has a name worth showing; one
+                registered by hand only has the id the user typed. */}
+            <strong>{names.get(server.id) ? nameOf(names.get(server.id)!) : server.id}</strong>
+            <small>{server.id} · {server.url}</small>
             <span className="market-row-tags">
               {server.private && <span className="market-tag market-tag--warn">{t('market.private')}</span>}
               {server.hasToken && <span className="market-tag">{t('market.tokenSaved')}</span>}
@@ -191,11 +266,16 @@ export function ToolMarket() {
 
     <Dialog isOpen={target !== null} onClose={() => setTarget(null)} title={t('market.installTitle')}
       type="confirm" confirmText={t('market.add')}
+      isDisabledConfirm={target?.auth === 'token' && !token.trim()}
       onConfirm={() => void confirmInstall()}>
-      <p>{t('market.installBody', { name: target?.name ?? '' })}</p>
+      <p>{target?.auth === 'optional'
+        ? t('market.optionalInstallBody', { name: target ? nameOf(target) : '' })
+        : t('market.installBody', { name: target ? nameOf(target) : '' })}</p>
       <label className="market-token">{t('cap.token')}
-        <input type="password" autoComplete="off" value={token} onChange={event => setToken(event.target.value)} />
+        <input type="password" autoComplete="off" value={token}
+          onChange={event => setToken(event.target.value)} />
       </label>
+      {target?.tokenIn === 'query' && <p className="market-hint">{t('market.tokenInQuery')}</p>}
       {target?.docs && <a className="market-docs" href={target.docs} target="_blank" rel="noreferrer">
         {t('market.getToken')}</a>}
     </Dialog>

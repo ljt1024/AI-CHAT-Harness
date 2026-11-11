@@ -16,7 +16,7 @@ from agentforge import netguard, secrets_box
 from agentforge.api import create_app
 from agentforge.catalog import parse_catalog
 from agentforge.config import Settings
-from agentforge.mcp_client import MCPTool
+from agentforge.mcp_client import MCPTool, connect, endpoint
 from agentforge.store import MongoDBStore
 from helpers import AuthedClient, TEST_PASSWORD
 
@@ -33,6 +33,12 @@ CATALOG = {"servers": {
         "name": "公开文档服务",
         "url": "https://docs.example.com/mcp",
         "auth": "none",
+    },
+    "Map Service": {
+        "name": "地图服务",
+        "url": "https://map.example.com/mcp?key={token}",
+        "auth": "token",
+        "docs": "https://map.example.com/keys",
     },
 }}
 
@@ -53,7 +59,8 @@ def build(tmp_path, catalog=True, **overrides):
         path.write_text(json.dumps(CATALOG), encoding="utf-8")
     settings = Settings(_env_file=None, admin_password=TEST_PASSWORD,
                         agentforge_workspace=tmp_path, sandbox_warm_size=0,
-                        mcp_config=tmp_path / "no-mcp.json", mcp_catalog=path, **overrides)
+                        mcp_config=tmp_path / "no-mcp.json",
+                        **{"mcp_catalog": path, **overrides})
     return store, create_app(settings, store)
 
 
@@ -105,9 +112,9 @@ async def test_the_page_installs_a_server_without_ever_seeing_its_url(tmp_path, 
             twice = await client.post("/api/mcp/catalog/team_gateway/install",
                                       json={"token": "team-token"})
             after = (await client.get("/api/mcp/catalog")).json()["data"]
-    assert {item["id"] for item in listed} == {"team_gateway", "public_docs"}
+    assert {item["id"] for item in listed} == {"team_gateway", "public_docs", "map_service"}
     assert {item["id"]: item["installed"] for item in listed} == {
-        "team_gateway": False, "public_docs": False}
+        "team_gateway": False, "public_docs": False, "map_service": False}
     assert installed.status_code == 201
     assert [tool["name"] for tool in installed.json()["data"]["tools"]] == ["mcp_team_gateway__lookup"]
     assert twice.status_code == 409
@@ -173,3 +180,92 @@ def test_a_human_key_becomes_the_id_the_runtime_namespaces(tmp_path):
     path.write_text(json.dumps({"servers": {
         "Company Gateway": {"name": "网关", "url": "https://g.example.com/mcp"}}}), encoding="utf-8")
     assert [item.id for item in parse_catalog(path)] == ["company_gateway"]
+
+
+def test_a_key_written_into_the_url_costs_that_entry(tmp_path):
+    """The catalogue is committed to a repository; a key in it would be published."""
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps({"servers": {
+        "leaky": {"name": "Leaky", "url": "https://api.example.com/mcp?key=sk-live-123"},
+        "templated": {"name": "Templated", "url": "https://api.example.com/mcp?key={token}"},
+    }}), encoding="utf-8")
+    assert [item.id for item in parse_catalog(path)] == ["templated"]
+
+
+def test_the_placeholder_only_matters_where_a_key_goes():
+    """A URL is either static, or a template with exactly one substitution point."""
+    assert endpoint("https://host/mcp", "k") == "https://host/mcp"
+    assert endpoint("https://host/mcp?key={token}", "k-1") == "https://host/mcp?key=k-1"
+    # A key is data, not syntax: `&` must not start a second parameter.
+    assert endpoint("https://host/mcp?key={token}", "a&b=c") == "https://host/mcp?key=a%26b%3Dc"
+    # No key supplied yet: drop the parameter rather than send `?key=`, which
+    # reads as a key of the wrong shape and fails with a different message.
+    assert endpoint("https://host/mcp?exaApiKey={token}", None) == "https://host/mcp"
+
+
+async def test_the_transport_is_handed_the_filled_url(monkeypatch):
+    """Substitution sits in `connect`, the one place that dials out, so no caller
+    can send the template itself and no caller has to remember to resolve it."""
+    seen = {}
+
+    class FakeTransport:
+        def __init__(self, url, http_client=None):
+            seen["url"] = url
+
+        async def __aenter__(self):
+            raise RuntimeError("stop before dialling")
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("agentforge.mcp_client.streamable_http_client", FakeTransport)
+    with pytest.raises(RuntimeError):
+        async with connect("https://api.example.com/mcp?key={token}", "s3cret"):
+            pass
+    assert seen["url"] == "https://api.example.com/mcp?key=s3cret"
+
+
+async def test_installing_a_query_parameter_service_keeps_the_key_out_of_the_url(tmp_path, monkeypatch):
+    seen = {}
+
+    async def fake_discover(url, token=None, timeout=None):
+        seen["url"], seen["token"] = url, token
+        return []
+
+    monkeypatch.setattr("agentforge.capabilities.discover_tools", fake_discover)
+    store, app = build(tmp_path)
+    async with app.router.lifespan_context(app):
+        async with client_for(app) as client:
+            listed = (await client.get("/api/mcp/catalog")).json()["data"]
+            installed = await client.post("/api/mcp/catalog/map_service/install",
+                                          json={"token": "amap-key-123"})
+            shown = (await client.get("/api/mcp/servers")).json()["data"]
+    card = next(item for item in listed if item["id"] == "map_service")
+    # The card has to say where the credential goes; a bearer header cannot
+    # reach a service that reads `?key=`.
+    assert card["tokenIn"] == "query"
+    assert installed.status_code == 201
+    row = await store.db.mcp_servers.find_one({"id": "map_service"})
+    assert row["url"] == "https://map.example.com/mcp?key={token}"
+    assert "amap-key-123" not in json.dumps(row["tools"])
+    assert secrets_box.decrypt(row["token"]) == "amap-key-123"
+    assert seen["token"] == "amap-key-123"
+    # Public shape drops the query, so the page never shows what it cannot use.
+    assert shown[0]["url"] == "https://map.example.com/mcp"
+
+
+async def test_an_entry_that_works_without_a_key_installs_without_one(tmp_path, monkeypatch):
+    async def fake_discover(url, token=None, timeout=None):
+        return []
+
+    monkeypatch.setattr("agentforge.capabilities.discover_tools", fake_discover)
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps({"servers": {"trial": {
+        "name": "Trial", "url": "https://trial.example.com/mcp?k={token}",
+        "auth": "optional"}}}), encoding="utf-8")
+    store, app = build(tmp_path, catalog=False, mcp_catalog=path)
+    async with app.router.lifespan_context(app):
+        async with client_for(app) as client:
+            installed = await client.post("/api/mcp/catalog/trial/install", json={})
+    assert installed.status_code == 201
+    assert (await store.db.mcp_servers.find_one({"id": "trial"}))["token"] is None

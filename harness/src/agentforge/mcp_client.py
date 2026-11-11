@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 import logging
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import httpx
 from mcp import ClientSession
@@ -24,6 +25,35 @@ DEFAULT_TIMEOUT = 60.0
 OUTPUT_LIMIT = 16000
 
 
+# Where a URL template says the credential goes. Some hosted services accept the
+# key only as a query parameter (`?key=`, `?ak=`), and a catalogue entry has to be
+# able to describe that without the key sitting in the stored URL.
+TOKEN_PLACEHOLDER = "{token}"
+
+
+def endpoint(url: str, token: str | None) -> str:
+    """Fill a URL template with this caller's credential.
+
+    Storing the template rather than the finished URL keeps one copy of a secret:
+    the encrypted `token` field. It also keeps the address in the row identical
+    for every account, which is what installation matches on.
+
+    A service that works without a key (a hosted trial) keeps working when no key
+    was supplied: the placeholder parameter is dropped rather than left empty,
+    because `?key=` reads as a key of the wrong shape and fails differently.
+    """
+    if TOKEN_PLACEHOLDER not in url:
+        return url
+    if not token:
+        parts = urlsplit(url)
+        if TOKEN_PLACEHOLDER in parts.query:
+            kept = [(name, value) for name, value in parse_qsl(parts.query, keep_blank_values=True)
+                    if TOKEN_PLACEHOLDER not in value]
+            return urlunsplit(parts._replace(query=urlencode(kept)))
+        return url
+    return url.replace(TOKEN_PLACEHOLDER, quote(token, safe=""))
+
+
 def headers(token: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
@@ -45,7 +75,7 @@ async def connect(url: str, token: str | None = None, timeout: float | None = No
     # domestic endpoints, and the proxy would see the bearer token.
     async with httpx.AsyncClient(trust_env=False, timeout=timeout or DEFAULT_TIMEOUT,
                                  headers=headers(token)) as client:
-        async with streamable_http_client(url, http_client=client) as (read, write, _):
+        async with streamable_http_client(endpoint(url, token), http_client=client) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session

@@ -220,19 +220,42 @@ start. Discovery times out after `MCP_DISCOVER_TIMEOUT` (30 s) and calls after
 
 A deployment can offer servers without handing users a URL field. `config/mcp_catalog.json` is
 seeded into `mcp_catalog` (shared, read-only) at startup; each entry carries name, summary,
-category, URL, `auth` (`none`, or `token` meaning each account brings its own), a `docs` link for
-getting that token, `verified`, and optionally `private`.
+category, URL, `auth` (`none`, `token` meaning each account brings its own, or `optional` for a
+hosted trial that answers without one), a `docs` link for getting that token, `verified`, and
+optionally `private`.
 
 ```json
 {"servers": {"team_gateway": {"name": "团队工具网关", "url": "https://gateway.example.com/mcp",
   "auth": "token", "docs": "https://gateway.example.com/tokens"}}}
 ```
 
+The file in this repository ships thirteen public services — documentation and code (Context7,
+DeepWiki, Cloudflare, Microsoft Learn, AWS), search and scraping (Exa, Firecrawl, Bocha, Tavily),
+maps (Amap, Tencent, Baidu) and company data (Tianyancha) — so a fresh deployment has a page worth
+opening. Each address was answered by this repository's own client while it was written; `verified`
+means that, not a quota. English readers get `name_en`/`summary_en`, falling back to the Chinese
+text rather than an empty card.
+
+A service that reads its key from the query string writes a placeholder: `"url":
+"https://mcp.amap.com/mcp?key={token}"`. `endpoint()` substitutes the account's token, percent
+encoded, at the one place that dials out, and the row keeps the template — so the database holds
+one copy of the secret, in the encrypted `token` column, and every account's address is identical.
+A literal query string is refused by both validators: without the placeholder there is no way to
+tell a key from a parameter, and this file is committed. When no key was supplied for an
+`optional` entry the placeholder parameter is dropped rather than sent empty.
+
 Installing sends a credential and no address: the URL comes from the row. That is the security
 argument, not a UI preference — an MCP registration makes the host dial an address, so a curated
 entry cannot be turned into a probe of `127.0.0.1` or `169.254.169.254`. The resulting record is
 an ordinary `mcp_servers` row, so everything else behaves the same. An absent file is a valid
 state: the page then offers only what the account installed, plus manual entry.
+
+Two caveats are the product's, not the code's. A successful install does not prove the credential
+works: Baidu answers a discovery with fourteen tools for a bogus `ak` and only fails at call time,
+so the page reports what the discovery returned instead of implying a working subscription. And
+OAuth-only services (Notion, Linear, Sentry, Feishu, DingTalk) plus SSE-only endpoints are not
+listed at all — the client speaks Streamable HTTP with a bearer header or a query parameter, and a
+card a user cannot finish is worse than no card (ADR-0030).
 
 ## API
 

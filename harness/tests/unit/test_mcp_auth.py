@@ -114,7 +114,7 @@ def test_a_rejected_config_reports_one_readable_sentence():
     with pytest.raises(ValueError) as caught:
         parse_config(json.dumps({"mcpServers": {"a": {"url": "ftp://host/mcp"}}}))
     message = str(caught.value)
-    assert message == "Use an HTTP(S) MCP URL without credentials, query or fragment."
+    assert message == "Use an HTTP(S) MCP URL without credentials or fragment."
 
 
 def test_describe_unwraps_the_group_and_masks_the_url_inside_it():
