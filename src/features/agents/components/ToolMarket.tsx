@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/app/providers/AuthContext';
 import { useLanguage } from '@/app/providers/LanguageContext';
 import Dialog from '@/shared/components/Dialog';
@@ -35,6 +35,39 @@ const orderOf = (category: string) => {
   const index = CATEGORY_ORDER.indexOf(category);
   return index === -1 ? CATEGORY_ORDER.length : index;
 };
+
+// A remount -- a dev-server reload, an expired session re-reading /api/auth/me --
+// rebuilds this component with empty arrays, and an empty array paints as "this
+// deployment offers nothing" for as long as the refetch takes. Keeping the last
+// answer in sessionStorage lets a remount repaint it at once and lets the refetch
+// correct it silently afterwards. Keyed by account so two logins on one browser
+// never see each other's installations.
+const CACHE_PREFIX = 'agentforge.market.';
+
+interface CachedMarket {
+  catalog: McpCatalogEntry[];
+  servers: McpServerSummary[];
+}
+
+function readCache(owner: string): CachedMarket | null {
+  try {
+    const raw = sessionStorage.getItem(CACHE_PREFIX + owner);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CachedMarket>;
+    if (!Array.isArray(parsed.catalog) || !Array.isArray(parsed.servers)) return null;
+    return { catalog: parsed.catalog, servers: parsed.servers };
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(owner: string, cache: CachedMarket): void {
+  try {
+    sessionStorage.setItem(CACHE_PREFIX + owner, JSON.stringify(cache));
+  } catch {
+    // A full quota costs one blank repaint after the next remount, not correctness.
+  }
+}
 
 /**
  * The catalogue, plus whatever this account already installed.
@@ -78,14 +111,34 @@ export function ToolMarket() {
     }
   }, []);
 
+  const owner = useRef('');
+
   useEffect(() => {
     // The catalogue needs an account; the guest path is the sign-in prompt, not
     // a request that would come back 401 and look like a broken page.
-    if (!user) return;
+    if (!user) { owner.current = ''; return; }
+    // Only a change of account clears the rows. The same account re-running this
+    // effect -- a fresh `user` object from /api/auth/me, say -- must keep what is
+    // already on screen; otherwise the list blinks away for a reason the reader
+    // cannot see.
+    if (owner.current !== user.id) {
+      owner.current = user.id;
+      // Paint the previous answer before asking again, so a remount shows the
+      // list it showed a moment ago instead of an empty shelf that fills in later.
+      const cached = readCache(user.id);
+      setCatalog(cached?.catalog ?? []);
+      setServers(cached?.servers ?? []);
+      setLoaded(!!cached);
+    }
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
   }, [load, user]);
+
+  useEffect(() => {
+    if (!user || !loaded) return;
+    writeCache(user.id, { catalog, servers });
+  }, [user, loaded, catalog, servers]);
 
   const run = useCallback(async (key: string, action: () => Promise<unknown>) => {
     setBusy(key);
