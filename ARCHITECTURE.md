@@ -39,10 +39,28 @@ src/
 - `harness/src/agentforge/loop.py`：主循环、ReAct 工具循环、停止条件与成功轮次提交。
 - `harness/src/agentforge/context.py`：按 token 预算压缩历史，准备模型上下文。
 - `harness/src/agentforge/store.py`：MongoDB 会话、轮次、检查点与成功历史。
-- `harness/src/agentforge/api.py`：HTTP 与 SSE 接口。
+- `harness/src/agentforge/api/`：HTTP 与 SSE 接口（`app` 装配、`deps` 共享状态、`routes/` 按资源分模块）。
 - `src/features/agents/api.ts`：前端 SSE 协议适配；浏览器不执行模型编排。
 
 `sessionId` 标识会话，`turnId` 标识用户输入轮次。只有 `remember` 节点更新成功历史、摘要与最后轮次 ID；失败执行中的临时上下文不能作为下一轮已提交记忆。
+
+## 后端包边界
+
+`harness/src/agentforge` 内部的分层由 `harness/tests/unit/test_layering.py` 守住（ADR-0034）：
+
+```text
+config / models / logging_config / redact / netguard   # 共享叶层，只依赖自己
+tools/                                                 # 文件、命令、网页、商品工具
+gateway/ context loop middleware                       # 运行时：模型网关与主循环
+sandbox/                                               # 包住工具，工具不认识它
+store auth skills capabilities catalog                 # 持久化、身份与能力装配
+api/                                                   # 唯一入口：装配 + 路由
+```
+
+- 只有 `api/` 可以 import `api/`（`server.py` 作为入口除外）。
+- 叶层不得向上引用；`tools/` 不得 import `sandbox`、`loop`、`middleware`。
+- `api/routes/*` 之间不得互相 import，共享的只有 `deps`、`schemas`、`events`。
+- 新增路由写在所属资源的 `build_router(deps)` 里，不往 `app.py` 里加。`auth.py` 等仍是平铺文件，按领域再分包是下一步（ADR-0034 已说明为何不在同一次改动里做）。
 
 ## 命名与导入
 

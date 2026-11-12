@@ -330,11 +330,13 @@ AI-CHAT-Harness/
 ├── src/                  # 前端：app / features(chat, agents) / shared / infrastructure
 ├── config/               # intervention.yaml：人工介入策略（唯一真理源）
 ├── harness/
-│   ├── src/agentforge/   # FastAPI 运行时：api、loop、gateway、middleware、sandbox、
-│   │                     #   tools、skills、capabilities、artifacts、permissions、
-│   │                     #   policy、store
-│   └── tests/            # unit + e2e（真实 Docker / MongoDB 用例会自动跳过缺口环境）
-├── docs/                 # IMPLEMENTATION、CAPABILITIES 与 ADR 0001-0033
+│   ├── src/agentforge/   # FastAPI 运行时
+│   │   ├── api/          #   接口层：app 装配、deps、schemas、events、routes/*
+│   │   ├── gateway/      #   模型网关；context.py 压缩、loop.py 主循环
+│   │   ├── sandbox/      #   容器、预热池、seccomp；tools/ 文件/命令/网页/商品
+│   │   └── store.py …    #   持久化、auth.py 身份、skills.py 与 capabilities.py
+│   └── tests/            # unit + e2e（含 test_layering：包边界，ADR-0034）
+├── docs/                 # IMPLEMENTATION、CAPABILITIES 与 ADR 0001-0034
 ├── mcp-server/           # 独立 MCP 示例服务
 ├── examples/skills/      # 示例技能包
 └── scripts/              # i18n 检查与浏览器验证脚本
@@ -376,7 +378,7 @@ Docker 与 MongoDB 用例在缺少外部依赖时会显式跳过；浏览器验�
 
 - [实现与验收记录](docs/IMPLEMENTATION.md) · [待办与决策](NOTES.md) · [项目结构规范](ARCHITECTURE.md)
 - [技能与 MCP 能力说明](docs/CAPABILITIES.md)
-- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md) · [0017 手机号注册与短信](docs/adr/0017-phone-signup-and-sms-codes.md) · [0018 邮箱注册与验证码邮件](docs/adr/0018-email-signup-and-smtp-codes.md) · [0019 模型调用重试](docs/adr/0019-model-call-retries.md) · [0020 会话文件系统](docs/adr/0020-conversation-file-system.md) · [0021 PDF 预览交给浏览器](docs/adr/0021-pdf-viewer-is-the-browser.md) · [0022 PDF 由 pdf.js 自绘](docs/adr/0022-pdf-pages-are-drawn-by-pdfjs.md) · [0023 pdf.js worker 按版本寻址](docs/adr/0023-pdfjs-worker-url-is-versioned.md) · [0024 联网是宿主能力](docs/adr/0024-web-access-is-a-harness-capability.md) · [0025 跟随由输入释放](docs/adr/0025-follow-is-released-by-input.md) · [0026 工作区属于会话](docs/adr/0026-a-workspace-belongs-to-the-conversation.md) · [0027 比价读商品库](docs/adr/0027-a-price-lookup-reads-the-catalogue.md) · [0028 预览是标签而不是覆盖](docs/adr/0028-preview-opens-as-tabs.md) · [0029 目录持有地址](docs/adr/0029-the-catalogue-owns-the-address.md) · [0030 目录可以列出别人的服务](docs/adr/0030-a-catalogue-can-list-somebody-elses-services.md) · [0031 见过的货架不被刷新抹掉](docs/adr/0031-a-shelf-once-seen-is-not-emptied-by-a-refresh.md) · [0032 掉线是一句提示](docs/adr/0032-a-dropped-session-is-a-banner.md) · [0033 参考树退役](docs/adr/0033-the-reference-tree-retires.md)
+- ADR：[0001 基础与运行时](docs/adr/0001-base-and-runtime.md) · [0002 SSE 兼容](docs/adr/0002-sse-compatibility.md) · [0003 运行时与检查点](docs/adr/0003-runtime-and-checkpoints.md) · [0004 中间件与审批](docs/adr/0004-middleware-and-approvals.md) · [0005 上下文压缩](docs/adr/0005-context-compaction.md) · [0006 Docker 沙箱](docs/adr/0006-docker-sandbox.md) · [0007 预热池与快照](docs/adr/0007-sandbox-pool-and-snapshots.md) · [0008 沙箱审批 UI](docs/adr/0008-sandbox-runtime-approval-ui.md) · [0009 技能与 MCP](docs/adr/0009-skills-and-mcp-runtime.md) · [0010 技能安装](docs/adr/0010-agent-skill-installation.md) · [0011 模型输出恢复](docs/adr/0011-model-output-recovery.md) · [0012 工作区写入与 HTML 交付](docs/adr/0012-workspace-writes-and-html-delivery.md) · [0013 沙箱自主命令](docs/adr/0013-autonomous-docker-commands.md) · [0014 账号与归属](docs/adr/0014-user-auth-and-ownership.md) · [0015 访客试聊](docs/adr/0015-anonymous-trial.md) · [0016 沙箱租约归属](docs/adr/0016-sandbox-lease-ownership.md) · [0017 手机号注册与短信](docs/adr/0017-phone-signup-and-sms-codes.md) · [0018 邮箱注册与验证码邮件](docs/adr/0018-email-signup-and-smtp-codes.md) · [0019 模型调用重试](docs/adr/0019-model-call-retries.md) · [0020 会话文件系统](docs/adr/0020-conversation-file-system.md) · [0021 PDF 预览交给浏览器](docs/adr/0021-pdf-viewer-is-the-browser.md) · [0022 PDF 由 pdf.js 自绘](docs/adr/0022-pdf-pages-are-drawn-by-pdfjs.md) · [0023 pdf.js worker 按版本寻址](docs/adr/0023-pdfjs-worker-url-is-versioned.md) · [0024 联网是宿主能力](docs/adr/0024-web-access-is-a-harness-capability.md) · [0025 跟随由输入释放](docs/adr/0025-follow-is-released-by-input.md) · [0026 工作区属于会话](docs/adr/0026-a-workspace-belongs-to-the-conversation.md) · [0027 比价读商品库](docs/adr/0027-a-price-lookup-reads-the-catalogue.md) · [0028 预览是标签而不是覆盖](docs/adr/0028-preview-opens-as-tabs.md) · [0029 目录持有地址](docs/adr/0029-the-catalogue-owns-the-address.md) · [0030 目录可以列出别人的服务](docs/adr/0030-a-catalogue-can-list-somebody-elses-services.md) · [0031 见过的货架不被刷新抹掉](docs/adr/0031-a-shelf-once-seen-is-not-emptied-by-a-refresh.md) · [0032 掉线是一句提示](docs/adr/0032-a-dropped-session-is-a-banner.md) · [0033 参考树退役](docs/adr/0033-the-reference-tree-retires.md) · [0034 接口层是一个包](docs/adr/0034-the-api-is-a-package.md)
 
 ## 常见问题
 

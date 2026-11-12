@@ -61,7 +61,7 @@ def build(root, runner=None, monkeypatch=None):
     settings = Settings(agentforge_workspace=root, admin_password=TEST_PASSWORD)
     store = MongoDBStore("", "test", client=AsyncMongoMockClient())
     if monkeypatch is not None:
-        monkeypatch.setattr("agentforge.api.SandboxPool", lambda *a, **k: pool)
+        monkeypatch.setattr("agentforge.api.app.SandboxPool", lambda *a, **k: pool)
         application = create_app(settings, store)
     return application, pool
 
