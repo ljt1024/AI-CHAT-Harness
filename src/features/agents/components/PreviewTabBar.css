@@ -1,0 +1,170 @@
+/* The strip reads as browser tabs: the open file is a chip you can switch to or
+   close, not a dropdown that hides what else is open. */
+.preview-tabbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  min-width: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-color) 55%, var(--panel-bg));
+}
+
+.preview-tab-scroll {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.preview-tab-scroll::-webkit-scrollbar { height: 4px; }
+.preview-tab-scroll::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 2px; }
+
+.preview-tab {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  max-width: 230px;
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  background: var(--surface-color);
+}
+
+.preview-tab.is-active {
+  border-color: var(--secondary-color);
+  background: var(--panel-bg);
+}
+
+/* These selectors are two classes deep on purpose: `.artifact-preview button`
+   sets a 40px touch target on every button in the panel, which would turn a tab
+   into a bar. Specificity wins without an !important. */
+.preview-tabbar .preview-tab-name,
+.preview-tabbar .preview-tab-close,
+.preview-tabbar .preview-tab--chat,
+.preview-tabbar .preview-tab-add {
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.preview-tabbar .preview-tab-name {
+  max-width: 180px;
+  padding: 7px 4px 7px 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-muted-color);
+}
+
+.preview-tab.is-active .preview-tab-name { color: var(--text-color); font-weight: 600; }
+
+.preview-tabbar .preview-tab-close {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-right: 4px;
+  border-radius: 6px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-muted-color);
+}
+
+.preview-tabbar .preview-tab-close:hover,
+.preview-tabbar .preview-tab-close:focus-visible {
+  background: color-mix(in srgb, var(--text-color) 12%, transparent);
+  color: var(--text-color);
+}
+
+.preview-tabbar .preview-tab--chat {
+  flex: 0 0 auto;
+  padding: 7px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  background: var(--surface-color);
+  font-size: 12.5px;
+  color: var(--text-muted-color);
+}
+
+.preview-tabbar .preview-tab--chat.is-active {
+  border-color: var(--secondary-color);
+  background: var(--panel-bg);
+  color: var(--text-color);
+  font-weight: 600;
+}
+
+/* Sits right after the last tab, as in a browser, rather than pinned to the far
+   edge where it reads as an unrelated toolbar button. */
+.preview-tab-more { position: relative; flex: 0 0 auto; margin-left: 2px; }
+
+.preview-tabbar .preview-tab-add {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-color);
+  border-radius: 9px;
+  background: var(--surface-color);
+  color: var(--text-muted-color);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.preview-tabbar .preview-tab-add:hover { color: var(--text-color); border-color: var(--secondary-color); }
+
+.preview-tab-more-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: grid;
+  gap: 2px;
+  min-width: 200px;
+  max-width: 320px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--panel-bg);
+  box-shadow: var(--panel-shadow);
+}
+
+.preview-tabbar .preview-tab-more-list button {
+  min-width: 0;
+  min-height: 0;
+  max-width: 300px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-color);
+  font-size: 12.5px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.preview-tabbar .preview-tab-more-list button:hover {
+  background: color-mix(in srgb, var(--text-color) 10%, transparent);
+}
+
+.preview-tabbar-empty { flex: 1; }
+
+@media (max-width: 768px) {
+  .preview-tabbar { padding: 6px 8px; gap: 5px; }
+  .preview-tabbar .preview-tab-name { max-width: 132px; font-size: 12px; padding-left: 9px; }
+  .preview-tabbar .preview-tab--chat { padding: 6px 11px; font-size: 12px; }
+}

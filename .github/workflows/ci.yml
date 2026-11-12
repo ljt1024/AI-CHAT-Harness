@@ -1,0 +1,21 @@
+name: Verify AgentForge
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.18"
+          python-version: "3.12"
+      - run: npm ci
+      - run: npm run build && npm run check:i18n && npm run lint
+      - run: uv run ruff check src tests
+        working-directory: harness
+      - run: uv run pytest tests/unit tests/e2e/test_tier1_api.py -q
+        working-directory: harness
