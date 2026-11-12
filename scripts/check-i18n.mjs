@@ -5,20 +5,13 @@ import ts from 'typescript';
 
 function read(path) { return JSON.parse(readFileSync(path, 'utf8')); }
 function keysIn(value) { return [...value.matchAll(/\{(\w+)\}/g)].map(match => match[1]).sort(); }
-const frontend = read('src/app/i18n/locales/zh.json');
-const backend = read('end/src/i18n/locales/zh.json');
-for (const folder of ['src/app/i18n/locales', 'end/src/i18n/locales']) {
-  const zh = read(`${folder}/zh.json`), en = read(`${folder}/en.json`);
-  assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort(), `${folder}: keys differ`);
-  for (const key of Object.keys(zh)) {
-    assert.ok(zh[key] && en[key], `Empty translation: ${key}`);
-    assert.deepEqual(keysIn(zh[key]), keysIn(en[key]), `Interpolation mismatch: ${key}`);
-  }
-}
-for (const key of Object.keys(frontend).filter(key => key.startsWith('server.'))) {
-  for (const language of ['zh', 'en']) {
-    assert.equal(read(`src/app/i18n/locales/${language}.json`)[key], read(`end/src/i18n/locales/${language}.json`)[key.slice(7)], `System progress differs: ${key}`);
-  }
+const folder = 'src/app/i18n/locales';
+const frontend = read(`${folder}/zh.json`);
+const zh = frontend, en = read(`${folder}/en.json`);
+assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort(), `${folder}: keys differ`);
+for (const key of Object.keys(zh)) {
+  assert.ok(zh[key] && en[key], `Empty translation: ${key}`);
+  assert.deepEqual(keysIn(zh[key]), keysIn(en[key]), `Interpolation mismatch: ${key}`);
 }
 function scan(folder, resources) {
   for (const entry of readdirSync(folder, { withFileTypes: true })) {
@@ -35,5 +28,5 @@ function scan(folder, resources) {
     visit(source);
   }
 }
-scan('src', frontend); scan('end/src', backend);
+scan('src', frontend);
 console.log('PASS: locale keys, interpolation parameters and translation references');

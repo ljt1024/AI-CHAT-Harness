@@ -3,6 +3,7 @@
 > 本文档是给 AI 编码 Agent 的执行指令，与《多智能体平台-开发计划.md》（§2.5 借鉴矩阵、§2.6 项目基座）配套使用。
 > v3 核心变更：**项目基座为用户自研的 [AI-CHAT @2.1.1](https://github.com/ljt1024/AI-CHAT/tree/2.1.1)**——前端全保留，后端换 Python FastAPI Harness，旧 Express/LangGraph 后端（`end/`）**保留不动作参考**。
 > 参考仓库：dsh（插件化/ADR/benchmark/Inspector）、ERP-AGENT（中间件栈/MCP/七层沙箱+五态生命周期/HITL/子Agent/Skills/MongoDB）。
+> **更新（2026-11-12）**：旧后端 `end/` 已按 [ADR-0033](docs/adr/0033-the-reference-tree-retires.md) 从仓库移除。下文凡要求「保留 / 只读 / 禁止修改 `end/`」的条款都是当时的执行约定，随目录一并失效；需要对照旧实现时从移除前的提交取回。
 
 ---
 
@@ -69,7 +70,7 @@ AI-CHAT/                        # fork 后的仓库根
 │   ├── features/agents/        # 稳定边界内扩展：向导/编排配置
 │   ├── features/chat/          # 对话页增强：HITL 卡片/工具过程/成本
 │   └── infrastructure/         # api.ts 指向 :8000 + SSE 事件对齐
-├── end/                        # 旧后端，只读参考，禁止修改
+├── end/                        # 旧后端，已于 2026-11-12 移除（ADR-0033）
 ├── harness/                    # 新 Python 后端（本任务书主体）
 │   ├── pyproject.toml          # uv 管理
 │   ├── src/agentforge/
@@ -278,7 +279,7 @@ WS     /ws/devtools/{session_id}      Inspector 实时事件
 
 - [ ] T0~T20 验收命令实际执行通过（T10~T12、T20 需 Linux + Docker）
 - [ ] 多人发布前，T15.A1~T15.A4 / M2A 全部验收通过，旧数据显式归属迁移与回滚演练完成；未完成不得声明支持多用户隔离
-- [ ] 前端 `end/` 目录 diff 为零（旧后端未被动过）
+- [ ] `end/` 已按 ADR-0033 移除，仓库与脚本中无残留引用
 - [ ] `grep -r "DEEPSEEK_API_KEY" harness/ --include="*.py"` 仅环境变量读取处
 - [ ] 前端改动符合 ARCHITECTURE.md（lint + check:i18n 通过）
 - [ ] 所有架构决策有 ADR；Decisions/Backlog 在 NOTES.md 完整

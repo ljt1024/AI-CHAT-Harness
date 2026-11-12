@@ -33,13 +33,13 @@ src/
 
 聊天页面不直接实现编排逻辑，只调用 agents feature 暴露的用例接口。模型请求、SSE 解析和本地存储逐步迁移到 `infrastructure`，便于测试和替换供应商。
 
-实际智能体执行与记忆由后端负责：
+实际智能体执行与记忆由后端负责（Python Harness；旧 Node 后端已按 ADR-0033 移除）：
 
-- `end/src/models/chatModel.js`：LangChain 模型供应商适配。
-- `end/src/agents/graph.js`：LangGraph 节点、ReAct 工具循环、成功记忆提交。
-- `end/src/agents/contextMemory.js`：分批整理历史摘要，准备模型上下文。
-- `end/src/agents/memoryStore.js`：官方 SQLite checkpoint 与旧历史迁移。
-- `end/src/services/agentService.js`：会话校验、单进程并发保护、轮次重试替换。
+- `harness/src/agentforge/gateway/`：模型供应商适配与流式输出。
+- `harness/src/agentforge/loop.py`：主循环、ReAct 工具循环、停止条件与成功轮次提交。
+- `harness/src/agentforge/context.py`：按 token 预算压缩历史，准备模型上下文。
+- `harness/src/agentforge/store.py`：MongoDB 会话、轮次、检查点与成功历史。
+- `harness/src/agentforge/api.py`：HTTP 与 SSE 接口。
 - `src/features/agents/api.ts`：前端 SSE 协议适配；浏览器不执行模型编排。
 
 `sessionId` 标识会话，`turnId` 标识用户输入轮次。只有 `remember` 节点更新成功历史、摘要与最后轮次 ID；失败执行中的临时上下文不能作为下一轮已提交记忆。
